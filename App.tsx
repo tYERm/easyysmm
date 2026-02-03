@@ -6,6 +6,7 @@ import {
 } from './components/Icons';
 import { SERVICES, TON_WALLET, calculatePrice, formatTon, formatRub, ADMIN_ID } from './services/data';
 import { verifyPayment } from './services/tonService';
+import { generateBio } from './services/geminiService';
 import { notifyAdminNewOrder, notifyAdminNewUser } from './services/telegramNotifier';
 import { 
     getUserData, getOrders, saveOrder, calculateStats, saveWalletData, 
@@ -16,7 +17,7 @@ import { SmmService, Order, TelegramUser, UserStats, WalletInfo } from './types'
 import { useTonConnectUI, useTonWallet } from '@tonconnect/ui-react';
 
 // --- Types ---
-type ViewState = 'home' | 'order' | 'payment' | 'history' | 'success' | 'profile' | 'admin' | 'banned';
+type ViewState = 'home' | 'order' | 'payment' | 'history' | 'success' | 'profile' | 'admin' | 'banned' | 'tools';
 
 // --- Utils ---
 const getIcon = (iconName: string, className: string) => {
@@ -100,7 +101,6 @@ const HistoryItem: FC<{ order: Order }> = ({ order }) => {
     );
 };
 
-// Admin specific order item with controls
 const AdminOrderItem: FC<{ order: Order; onUpdate: (id: string, status: 'completed' | 'cancelled') => void }> = ({ order, onUpdate }) => {
     return (
         <div className="glass-card rounded-xl p-4 mb-3 border border-white/10">
@@ -191,6 +191,11 @@ const App: React.FC = () => {
     // Verification State
     const [isVerifying, setIsVerifying] = useState(false);
     const [verifyError, setVerifyError] = useState<string | null>(null);
+
+    // AI Bio Generator State
+    const [bioKeywords, setBioKeywords] = useState('');
+    const [generatedBio, setGeneratedBio] = useState('');
+    const [isGeneratingBio, setIsGeneratingBio] = useState(false);
 
     const isAdmin = user?.id === ADMIN_ID;
 
@@ -346,6 +351,17 @@ const App: React.FC = () => {
         }
     };
 
+    const handleGenerateBio = async () => {
+        if (!bioKeywords) return;
+        setIsGeneratingBio(true);
+        const bio = await generateBio(bioKeywords);
+        setGeneratedBio(bio);
+        setIsGeneratingBio(false);
+        if ((window as any).Telegram?.WebApp?.HapticFeedback) {
+            (window as any).Telegram.WebApp.HapticFeedback.notificationOccurred('success');
+        }
+    };
+
     const handleConnectWallet = () => tonConnectUI.openModal();
     const handleDisconnectWallet = () => tonConnectUI.disconnect();
 
@@ -372,7 +388,13 @@ const App: React.FC = () => {
                     <p className="text-xs text-accent-cyan font-medium tracking-wide">SYSTEM ONLINE</p>
                 </div>
             </div>
-            {/* Top Profile button removed as requested */}
+            <button 
+                onClick={() => setView('tools')}
+                className="flex items-center gap-2 bg-gradient-to-r from-violet-600 to-fuchsia-600 rounded-full px-3 py-1.5 shadow-lg shadow-violet-500/20 active:scale-95 transition-all"
+            >
+                <SparklesIcon className="w-4 h-4 text-white" />
+                <span className="text-xs font-bold text-white">Free AI Tools</span>
+            </button>
         </div>
     );
 
@@ -393,18 +415,71 @@ const App: React.FC = () => {
         </div>
     );
 
+    const renderTools = () => (
+         <div className="flex flex-col h-full animate-slide-up p-5 pb-24">
+             <div className="flex items-center gap-4 mb-6">
+                <button onClick={() => setView('home')} className="p-2 -ml-2 rounded-full hover:bg-white/10">
+                    <ChevronLeftIcon className="w-6 h-6 text-white" />
+                </button>
+                <h2 className="font-bold text-lg text-white">AI Tools</h2>
+            </div>
+            
+            <div className="glass-panel p-5 rounded-2xl border border-white/10">
+                <div className="flex items-center gap-3 mb-4">
+                    <div className="w-10 h-10 rounded-lg bg-gradient-to-br from-indigo-500 to-purple-500 flex items-center justify-center">
+                        <SparklesIcon className="w-6 h-6 text-white" />
+                    </div>
+                    <div>
+                        <h3 className="font-bold text-white">AI Bio Generator</h3>
+                        <p className="text-xs text-gray-400">Генератор описания профиля</p>
+                    </div>
+                </div>
+                
+                <div className="space-y-4">
+                    <div className="space-y-2">
+                        <label className="text-xs text-gray-400">Ключевые слова (через запятую)</label>
+                        <input 
+                            type="text" 
+                            value={bioKeywords}
+                            onChange={(e) => setBioKeywords(e.target.value)}
+                            placeholder="блогер, путешествия, лайфстайл..."
+                            className="w-full bg-black/20 border border-white/10 rounded-xl p-3 text-sm text-white focus:outline-none focus:border-violet-500"
+                        />
+                    </div>
+                    <button 
+                        onClick={handleGenerateBio}
+                        disabled={isGeneratingBio || !bioKeywords}
+                        className="w-full py-3 bg-white text-black font-bold rounded-xl disabled:opacity-50"
+                    >
+                        {isGeneratingBio ? 'Генерирую...' : 'Создать Bio'}
+                    </button>
+                    
+                    {generatedBio && (
+                        <div className="mt-4 p-4 bg-white/5 rounded-xl border border-white/10 animate-pop">
+                            <p className="text-sm text-white font-mono mb-2">{generatedBio}</p>
+                            <button 
+                                onClick={() => copyToClipboard(generatedBio)}
+                                className="flex items-center gap-2 text-xs text-accent-cyan font-bold"
+                            >
+                                <CopyIcon className="w-3 h-3" />
+                                Копировать
+                            </button>
+                        </div>
+                    )}
+                </div>
+            </div>
+         </div>
+    );
+
     const renderAdminPanel = () => {
-        // Collect unique users from orders to display in "Users" tab (mock simulation since we lack backend)
+        // Collect unique users from orders (mock simulation for frontend demo)
         const uniqueUsers = Array.from(new Set(adminOrders.map(o => o.userId)))
             .filter((id): id is number => typeof id === 'number')
             .map(id => {
-                // Find last order for this user to get info? 
-                // We don't save user names in orders unfortunately in this simple version, 
-                // but we can list IDs. In a real app, users table would exist.
                 return { id };
             });
 
-        // Add current user to the list for demo purposes if not there
+        // Add current user if not present (to show at least one user)
         if (user && !uniqueUsers.find(u => u.id === user.id)) {
             uniqueUsers.push({ id: user.id });
         }
@@ -436,7 +511,12 @@ const App: React.FC = () => {
                 <div className="space-y-3 pb-4 overflow-y-auto">
                     {adminTab === 'orders' ? (
                         adminOrders.length === 0 ? (
-                            <p className="text-center text-gray-500 mt-10">Нет активных заказов</p>
+                            <div className="text-center mt-10">
+                                <p className="text-gray-500">Нет активных заказов</p>
+                                <p className="text-[10px] text-gray-600 mt-2 max-w-[200px] mx-auto">
+                                    Примечание: В демо-режиме видны только локальные заказы.
+                                </p>
+                            </div>
                         ) : (
                             adminOrders.map((order) => (
                                 <AdminOrderItem key={order.id} order={order} onUpdate={handleAdminUpdateStatus} />
@@ -464,8 +544,8 @@ const App: React.FC = () => {
                                     </div>
                                 );
                             })}
-                            <p className="text-xs text-gray-500 text-center mt-4">
-                                * Список формируется из локальной истории заказов
+                             <p className="text-[10px] text-gray-500 text-center mt-4 px-4">
+                                * Список пользователей формируется из локальной истории браузера. В продакшене здесь будет список всех пользователей из БД.
                             </p>
                         </div>
                     )}
@@ -617,7 +697,7 @@ const App: React.FC = () => {
                                 </button>
                             </div>
                             <div className="glass-card p-4 rounded-xl text-left flex-1 relative">
-                                <p className="text-xs text-gray-500 mb-1">Комментарий (Memo)</p>
+                                <p className="text-xs text-gray-500 mb-1">Memo (Комментарий)</p>
                                 <p className="font-bold text-xl text-accent-pink">{memo}</p>
                                 <button onClick={() => copyToClipboard(memo.toString())} className="absolute right-2 top-2 p-2 hover:bg-white/10 rounded-lg text-violet-300">
                                     <CopyIcon className="w-4 h-4" />
@@ -771,6 +851,7 @@ const App: React.FC = () => {
             {view === 'history' && renderHistory()}
             {view === 'profile' && renderProfile()}
             {view === 'admin' && renderAdminPanel()}
+            {view === 'tools' && renderTools()}
 
             {/* Bottom Navigation */}
             {['home', 'history', 'profile', 'admin'].includes(view) && (

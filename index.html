@@ -1,0 +1,186 @@
+<!DOCTYPE html>
+<html lang="ru">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
+    <title>EasySMM - Премиум Услуги</title>
+    <script src="https://telegram.org/js/telegram-web-app.js"></script>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script>
+      tailwind.config = {
+        theme: {
+          extend: {
+            colors: {
+              violet: {
+                950: '#05010a', // Deepest Void
+                900: '#130623',
+                800: '#260c45',
+                700: '#4c1d95',
+                600: '#7c3aed',
+                500: '#8b5cf6',
+                400: '#a78bfa',
+                300: '#c4b5fd',
+                100: '#ede9fe',
+              },
+              accent: {
+                cyan: '#22d3ee',
+                pink: '#f472b6',
+                lime: '#a3e635'
+              }
+            },
+            fontFamily: {
+              sans: ['Inter', 'sans-serif'],
+              outfit: ['Outfit', 'sans-serif'],
+            },
+            animation: {
+              'pulse-slow': 'pulse 4s cubic-bezier(0.4, 0, 0.6, 1) infinite',
+              'float': 'float 6s ease-in-out infinite',
+              'slide-up': 'slideUp 0.4s cubic-bezier(0.16, 1, 0.3, 1) forwards',
+              'pop': 'pop 0.3s cubic-bezier(0.175, 0.885, 0.32, 1.275) forwards',
+              'shimmer': 'shimmer 2.5s linear infinite',
+              'scan': 'scan 2s linear infinite',
+            },
+            keyframes: {
+              float: {
+                '0%, 100%': { transform: 'translateY(0)' },
+                '50%': { transform: 'translateY(-10px)' },
+              },
+              slideUp: {
+                '0%': { transform: 'translateY(20px)', opacity: '0' },
+                '100%': { transform: 'translateY(0)', opacity: '1' },
+              },
+              pop: {
+                '0%': { transform: 'scale(0.9)', opacity: '0' },
+                '100%': { transform: 'scale(1)', opacity: '1' },
+              },
+              shimmer: {
+                '0%': { transform: 'translateX(-100%)' },
+                '100%': { transform: 'translateX(200%)' },
+              },
+              scan: {
+                '0%': { top: '0%', opacity: 0 },
+                '50%': { opacity: 1 },
+                '100%': { top: '100%', opacity: 0 },
+              }
+            }
+          },
+        },
+      }
+    </script>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=Outfit:wght@300;400;500;700&display=swap" rel="stylesheet">
+    <style>
+      body {
+        font-family: 'Outfit', sans-serif;
+        background-color: #05010a;
+        color: #ede9fe;
+        overflow-x: hidden;
+        overscroll-behavior-y: none;
+      }
+      
+      .glass-panel {
+        background: rgba(255, 255, 255, 0.03);
+        backdrop-filter: blur(20px);
+        -webkit-backdrop-filter: blur(20px);
+        border: 1px solid rgba(255, 255, 255, 0.05);
+        box-shadow: 0 4px 30px rgba(0, 0, 0, 0.1);
+      }
+
+      .glass-card {
+        background: linear-gradient(145deg, rgba(255, 255, 255, 0.05) 0%, rgba(255, 255, 255, 0.01) 100%);
+        backdrop-filter: blur(10px);
+        border: 1px solid rgba(255, 255, 255, 0.05);
+      }
+      
+      .no-scrollbar::-webkit-scrollbar {
+        display: none;
+      }
+      .no-scrollbar {
+        -ms-overflow-style: none;
+        scrollbar-width: none;
+      }
+
+      /* Nebula Background */
+      .nebula-bg {
+        position: fixed;
+        top: 0;
+        left: 0;
+        width: 100vw;
+        height: 100vh;
+        z-index: -1;
+        overflow: hidden;
+        background: #05010a;
+      }
+
+      .nebula-orb {
+        position: absolute;
+        border-radius: 50%;
+        filter: blur(80px);
+        opacity: 0.4;
+        animation: float 10s ease-in-out infinite;
+      }
+
+      .orb-1 {
+        top: -10%;
+        right: -10%;
+        width: 400px;
+        height: 400px;
+        background: #4c1d95;
+        animation-delay: 0s;
+      }
+
+      .orb-2 {
+        bottom: -20%;
+        left: -10%;
+        width: 500px;
+        height: 500px;
+        background: #0f4c75;
+        animation-delay: -2s;
+      }
+
+      .orb-3 {
+        top: 40%;
+        left: 30%;
+        width: 300px;
+        height: 300px;
+        background: #be185d;
+        opacity: 0.2;
+        animation-delay: -5s;
+      }
+      
+      .scan-line {
+        position: absolute;
+        left: 0;
+        width: 100%;
+        height: 2px;
+        background: #22d3ee;
+        box-shadow: 0 0 10px #22d3ee;
+        animation: scan 2s linear infinite;
+        z-index: 10;
+      }
+    </style>
+    <script type="importmap">
+{
+  "imports": {
+    "react": "https://esm.sh/react@18.3.1",
+    "react/": "https://esm.sh/react@18.3.1/",
+    "react-dom": "https://esm.sh/react-dom@18.3.1?external=react",
+    "react-dom/": "https://esm.sh/react-dom@18.3.1/?external=react",
+    "react-dom/client": "https://esm.sh/react-dom@18.3.1/client?external=react",
+    "@google/genai": "https://esm.sh/@google/genai@0.1.0",
+    "@tonconnect/ui-react": "https://esm.sh/@tonconnect/ui-react@2.0.9?external=react,react-dom",
+    "@tonconnect/sdk": "https://esm.sh/@tonconnect/sdk@3.0.0"
+  }
+}
+</script>
+<link rel="stylesheet" href="/index.css">
+</head>
+  <body>
+    <div class="nebula-bg">
+        <div class="nebula-orb orb-1"></div>
+        <div class="nebula-orb orb-2"></div>
+        <div class="nebula-orb orb-3"></div>
+    </div>
+    <div id="root"></div>
+  <script type="module" src="/index.tsx"></script>
+</body>
+</html>

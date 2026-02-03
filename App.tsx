@@ -2,16 +2,17 @@ import React, { useState, useEffect, useMemo, FC } from 'react';
 import { 
     UsersIcon, EyeIcon, ThumbsUpIcon, ThumbsDownIcon, BotIcon, 
     HomeIcon, HistoryIcon, WalletIcon, ChevronLeftIcon, CopyIcon,
-    CheckIcon, SparklesIcon, ArrowRightIcon, TrashIcon
+    CheckIcon, SparklesIcon, ArrowRightIcon, TrashIcon, ShieldIcon
 } from './components/Icons';
-import { SERVICES, TON_WALLET, calculatePrice, formatTon, formatRub } from './services/data';
-import { verifyPayment, sendOrderToBot } from './services/tonService';
-import { getUserData, getUserOrders, saveOrder, calculateStats, saveWalletData, disconnectWalletData, fetchWalletBalance } from './services/userService';
+import { SERVICES, TON_WALLET, calculatePrice, formatTon, formatRub, ADMIN_ID } from './services/data';
+import { verifyPayment } from './services/tonService';
+import { notifyAdminNewOrder } from './services/telegramNotifier';
+import { getUserData, getOrders, saveOrder, calculateStats, saveWalletData, disconnectWalletData, fetchWalletBalance, updateOrderStatus } from './services/userService';
 import { SmmService, Order, TelegramUser, UserStats, WalletInfo } from './types';
 import { useTonConnectUI, useTonWallet } from '@tonconnect/ui-react';
 
 // --- Types ---
-type ViewState = 'home' | 'order' | 'payment' | 'history' | 'success' | 'profile';
+type ViewState = 'home' | 'order' | 'payment' | 'history' | 'success' | 'profile' | 'admin';
 
 // --- Utils ---
 const getIcon = (iconName: string, className: string) => {
@@ -79,6 +80,7 @@ const HistoryItem: FC<{ order: Order }> = ({ order }) => {
                     <span className={`text-[10px] px-2 py-0.5 rounded-full font-bold uppercase border 
                         ${order.status === 'completed' ? 'bg-green-500/10 text-green-400 border-green-500/20' : 
                           order.status === 'active' ? 'bg-blue-500/10 text-blue-400 border-blue-500/20' : 
+                          order.status === 'cancelled' ? 'bg-red-500/10 text-red-400 border-red-500/20' :
                           'bg-orange-500/10 text-orange-400 border-orange-500/20'}`}>
                         {getStatusText(order.status)}
                     </span>
@@ -89,6 +91,55 @@ const HistoryItem: FC<{ order: Order }> = ({ order }) => {
             <div className="text-right">
                 <div className="text-lg font-bold text-white tracking-tight">{order.amountTon.toFixed(2)} TON</div>
                 <div className="text-xs text-violet-400">{order.quantity.toLocaleString()} шт</div>
+            </div>
+        </div>
+    );
+};
+
+// Admin specific order item with controls
+const AdminOrderItem: FC<{ order: Order; onUpdate: (id: string, status: 'completed' | 'cancelled') => void }> = ({ order, onUpdate }) => {
+    return (
+        <div className="glass-card rounded-xl p-4 mb-3 border border-white/10">
+            <div className="flex justify-between items-start mb-2">
+                <div>
+                    <div className="text-xs text-gray-400 font-mono">ID: {order.memo}</div>
+                    <div className="font-bold text-white text-sm mt-1">{order.serviceName}</div>
+                </div>
+                <div className="text-right">
+                    <div className="text-accent-cyan font-bold">{order.amountTon.toFixed(2)} TON</div>
+                </div>
+            </div>
+            
+            <div className="bg-white/5 rounded-lg p-2 text-xs font-mono text-violet-300 break-all mb-3">
+                {order.url}
+            </div>
+
+            <div className="flex justify-between items-center">
+                <div className="text-xs text-gray-500">
+                     {new Date(order.createdAt).toLocaleString('ru-RU')}
+                </div>
+                
+                {order.status === 'active' ? (
+                    <div className="flex gap-2">
+                         <button 
+                            onClick={() => onUpdate(order.id, 'cancelled')}
+                            className="px-3 py-1.5 bg-red-500/20 text-red-400 rounded-lg text-xs font-bold hover:bg-red-500/30 transition-colors"
+                         >
+                            Отменить
+                         </button>
+                         <button 
+                            onClick={() => onUpdate(order.id, 'completed')}
+                            className="px-3 py-1.5 bg-green-500/20 text-green-400 rounded-lg text-xs font-bold hover:bg-green-500/30 transition-colors"
+                         >
+                            Выполнено
+                         </button>
+                    </div>
+                ) : (
+                    <span className={`text-xs px-2 py-1 rounded font-bold uppercase
+                        ${order.status === 'completed' ? 'text-green-400 bg-green-500/10' : 'text-red-400 bg-red-500/10'}`}>
+                        {order.status === 'completed' ? 'Выполнен' : 'Отменен'}
+                    </span>
+                )}
             </div>
         </div>
     );
@@ -121,6 +172,7 @@ const App: React.FC = () => {
     // User & Data State
     const [user, setUser] = useState<TelegramUser | null>(null);
     const [orders, setOrders] = useState<Order[]>([]);
+    const [adminOrders, setAdminOrders] = useState<Order[]>([]); // For admin panel
     const [stats, setStats] = useState<UserStats | null>(null);
     const [walletInfo, setWalletInfo] = useState<WalletInfo | null>(null);
     
@@ -132,7 +184,8 @@ const App: React.FC = () => {
     // Verification State
     const [isVerifying, setIsVerifying] = useState(false);
     const [verifyError, setVerifyError] = useState<string | null>(null);
-    const [lastOrder, setLastOrder] = useState<Order | null>(null);
+
+    const isAdmin = user?.id === ADMIN_ID;
 
     // Initial load
     useEffect(() => {
@@ -146,13 +199,15 @@ const App: React.FC = () => {
             tg.setBackgroundColor('#05010a');
         }
 
-        // Load User Data & Stats (Mock Backend Call)
+        // Load User Data
         const currentUser = getUserData();
         setUser(currentUser);
 
-        const savedOrders = getUserOrders();
-        setOrders(savedOrders);
-        setStats(calculateStats(savedOrders));
+        if (currentUser) {
+            const myOrders = getOrders(currentUser.id, false);
+            setOrders(myOrders);
+            setStats(calculateStats(myOrders));
+        }
 
     }, []);
 
@@ -160,39 +215,31 @@ const App: React.FC = () => {
     useEffect(() => {
         const updateWalletData = async () => {
             if (tonWallet && tonWallet.account) {
-                // Wallet connected!
                 const rawAddress = tonWallet.account.address;
                 const balance = await fetchWalletBalance(rawAddress);
-                
                 const info: WalletInfo = {
                     address: rawAddress,
                     appName: tonWallet.device.appName || "Ton Wallet",
                     balance: balance,
                     isConnected: true
                 };
-
                 setWalletInfo(info);
-                saveWalletData(info); // Sync with "Backend"
-
-                if ((window as any).Telegram?.WebApp?.HapticFeedback) {
-                     (window as any).Telegram.WebApp.HapticFeedback.notificationOccurred('success');
-                }
+                saveWalletData(info);
             } else {
-                // Wallet disconnected
                 setWalletInfo(null);
                 disconnectWalletData();
             }
         };
-
         updateWalletData();
     }, [tonWallet]);
 
-    // Recalculate stats whenever orders change
+    // Admin Data Fetcher
     useEffect(() => {
-        if (orders.length > 0) {
-            setStats(calculateStats(orders));
+        if (isAdmin && view === 'admin') {
+            const all = getOrders(undefined, true);
+            setAdminOrders(all);
         }
-    }, [orders]);
+    }, [view, isAdmin]);
 
     const handleServiceSelect = (service: SmmService) => {
         setSelectedService(service);
@@ -210,14 +257,13 @@ const App: React.FC = () => {
     };
 
     const handleVerifyPayment = async () => {
-        if (!selectedService) return;
+        if (!selectedService || !user) return;
         
         setIsVerifying(true);
         setVerifyError(null);
 
         const { ton, rub } = calculatePrice(quantity, selectedService.price_per_k);
 
-        // Call logic to check blockchain
         const result = await verifyPayment(memo.toString(), ton);
 
         if (result.verified) {
@@ -230,17 +276,17 @@ const App: React.FC = () => {
                 amountTon: ton,
                 amountRub: rub,
                 memo: memo,
-                status: 'active', // Confirmed paid
+                status: 'active',
                 createdAt: new Date().toISOString()
             };
 
-            // Save via Service (Mock Backend)
-            const updatedOrders = saveOrder(newOrder);
+            // 1. Save locally
+            const updatedOrders = saveOrder(newOrder, user.id);
             setOrders(updatedOrders);
-            setLastOrder(newOrder);
+            setStats(calculateStats(updatedOrders));
             
-            // NOTE: We do NOT send to bot immediately, as it closes the app.
-            // We wait for the user to click "Close" in the success view.
+            // 2. Notify Admin via Telegram Bot API
+            await notifyAdminNewOrder(newOrder, user);
             
             setView('success');
             
@@ -257,40 +303,35 @@ const App: React.FC = () => {
         setIsVerifying(false);
     };
 
-    const handleCloseApp = () => {
-        if (lastOrder) {
-            sendOrderToBot(lastOrder);
+    const handleAdminUpdateStatus = (orderId: string, status: 'completed' | 'cancelled') => {
+        const updated = updateOrderStatus(orderId, status);
+        setAdminOrders(updated);
+        
+        // Also update local user view if it's their own order
+        if (user) {
+            const myOrders = getOrders(user.id, false);
+            setOrders(myOrders);
         }
-        // Small delay to ensure data is sent before closing
-        setTimeout(() => {
-            if ((window as any).Telegram?.WebApp) {
-                (window as any).Telegram.WebApp.close();
-            }
-        }, 100);
+
+        if ((window as any).Telegram?.WebApp?.HapticFeedback) {
+            (window as any).Telegram.WebApp.HapticFeedback.impactOccurred('medium');
+        }
     };
 
-    // Trigger TonConnect Modal
-    const handleConnectWallet = () => {
-        tonConnectUI.openModal();
-    };
-
-    // Trigger Disconnect
-    const handleDisconnectWallet = () => {
-        tonConnectUI.disconnect();
-    };
+    const handleConnectWallet = () => tonConnectUI.openModal();
+    const handleDisconnectWallet = () => tonConnectUI.disconnect();
 
     const priceData = useMemo(() => {
         if (!selectedService) return { rub: 0, ton: 0 };
         return calculatePrice(quantity, selectedService.price_per_k);
     }, [selectedService, quantity]);
 
-    // Construct TON Deep Link for Tonkeeper (Manual Payment)
     const tonDeepLink = useMemo(() => {
         const nanoTons = Math.floor(priceData.ton * 1000000000);
         return `ton://transfer/${TON_WALLET}?amount=${nanoTons}&text=${memo}`;
     }, [priceData.ton, memo]);
 
-    // Views
+    // --- Views Render Functions ---
 
     const renderHeader = () => (
         <div className="flex items-center justify-between animate-slide-up">
@@ -302,7 +343,6 @@ const App: React.FC = () => {
                 </div>
             </div>
             
-            {/* Profile Button */}
             <button 
                 onClick={() => setView('profile')}
                 className="flex items-center gap-2 bg-white/5 border border-white/10 rounded-full pl-3 pr-1 py-1 backdrop-blur-md hover:bg-white/10 transition-all active:scale-95 group"
@@ -324,7 +364,6 @@ const App: React.FC = () => {
     const renderHome = () => (
         <div className="p-5 space-y-6 pb-24">
             {renderHeader()}
-
             <div className="space-y-4 animate-slide-up" style={{ animationDelay: '0.1s' }}>
                 <div className="flex items-center justify-between">
                     <h2 className="text-sm font-bold text-violet-300 uppercase tracking-widest">Услуги</h2>
@@ -332,20 +371,238 @@ const App: React.FC = () => {
                 </div>
                 <div className="space-y-3">
                     {SERVICES.map(service => (
-                        <ServiceCard 
-                            key={service.id} 
-                            service={service} 
-                            onClick={() => handleServiceSelect(service)} 
-                        />
+                        <ServiceCard key={service.id} service={service} onClick={() => handleServiceSelect(service)} />
                     ))}
                 </div>
             </div>
         </div>
     );
 
+    const renderAdminPanel = () => (
+        <div className="p-5 pb-24 h-full flex flex-col">
+            <h2 className="text-xl font-bold text-white mb-4 animate-slide-up flex items-center gap-2">
+                <ShieldIcon className="w-6 h-6 text-accent-cyan" />
+                Админ Панель
+            </h2>
+            
+            <div className="space-y-3 pb-4">
+                {adminOrders.length === 0 ? (
+                    <p className="text-center text-gray-500 mt-10">Нет активных заказов</p>
+                ) : (
+                    adminOrders.map((order) => (
+                        <AdminOrderItem key={order.id} order={order} onUpdate={handleAdminUpdateStatus} />
+                    ))
+                )}
+            </div>
+        </div>
+    );
+
+    const renderHistory = () => (
+        <div className="p-5 pb-24 h-full flex flex-col">
+            <h2 className="text-xl font-bold text-white mb-4 animate-slide-up flex items-center gap-2">
+                <HistoryIcon className="w-6 h-6 text-violet-400" />
+                История
+            </h2>
+             <div className="space-y-3 pb-4">
+                {orders.length === 0 ? (
+                    <div className="text-center py-10">
+                        <div className="w-16 h-16 bg-white/5 rounded-full flex items-center justify-center mx-auto mb-4">
+                            <HistoryIcon className="w-8 h-8 text-gray-600" />
+                        </div>
+                        <p className="text-gray-400">История заказов пуста</p>
+                    </div>
+                ) : (
+                    orders.map((order) => <HistoryItem key={order.id} order={order} />)
+                )}
+            </div>
+        </div>
+    );
+
+    const renderOrderForm = () => {
+        if (!selectedService) return null;
+        return (
+            <div className="flex flex-col h-full animate-slide-up">
+                <div className="p-4 flex items-center gap-4 border-b border-white/5 bg-[#05010a]/50 backdrop-blur-md sticky top-0 z-10">
+                    <button onClick={() => setView('home')} className="p-2 -ml-2 rounded-full hover:bg-white/10 active:scale-90 transition-all">
+                        <ChevronLeftIcon className="w-6 h-6 text-white" />
+                    </button>
+                    <h2 className="font-bold text-lg text-white">Оформление</h2>
+                </div>
+
+                <div className="p-5 space-y-6 flex-1 overflow-y-auto pb-24">
+                    <div className="glass-card p-4 rounded-xl flex items-start gap-4">
+                         <div className="w-12 h-12 rounded-xl bg-violet-950/50 flex items-center justify-center text-violet-300 border border-white/10 shadow-lg">
+                            {getIcon(selectedService.icon, "w-6 h-6")}
+                        </div>
+                        <div>
+                            <h3 className="font-bold text-white text-lg">{selectedService.name}</h3>
+                            <p className="text-sm text-gray-400 mt-1">{selectedService.description}</p>
+                        </div>
+                    </div>
+
+                    <div className="space-y-4">
+                        <div className="space-y-2">
+                            <label className="text-xs font-bold text-violet-300 uppercase ml-1">{selectedService.url_prompt}</label>
+                            <input 
+                                type="text" 
+                                value={url}
+                                onChange={(e) => setUrl(e.target.value)}
+                                placeholder={selectedService.url_example}
+                                className="w-full bg-white/5 border border-white/10 rounded-xl p-4 text-white placeholder-white/20 focus:outline-none focus:border-accent-cyan/50 focus:bg-white/10 transition-all font-mono text-sm"
+                            />
+                        </div>
+
+                        <div className="space-y-2">
+                            <label className="text-xs font-bold text-violet-300 uppercase ml-1">Количество</label>
+                            <input 
+                                type="range" 
+                                min={selectedService.min}
+                                max={selectedService.max}
+                                step={10}
+                                value={quantity}
+                                onChange={(e) => setQuantity(Number(e.target.value))}
+                                className="w-full accent-accent-cyan h-2 bg-white/10 rounded-lg appearance-none cursor-pointer"
+                            />
+                            <div className="flex justify-between items-center bg-white/5 rounded-xl p-3 border border-white/10">
+                                <span className="text-sm text-gray-400">Кол-во:</span>
+                                <input 
+                                    type="number"
+                                    value={quantity}
+                                    onChange={(e) => setQuantity(Math.max(selectedService.min, Math.min(selectedService.max, Number(e.target.value))))}
+                                    className="bg-transparent text-right font-bold text-white focus:outline-none w-32"
+                                />
+                            </div>
+                            <div className="flex justify-between text-xs text-gray-500 px-1">
+                                <span>Min: {selectedService.min}</span>
+                                <span>Max: {selectedService.max.toLocaleString()}</span>
+                            </div>
+                        </div>
+                    </div>
+
+                    <div className="glass-panel p-4 rounded-xl mt-auto">
+                        <div className="flex justify-between items-end mb-2">
+                            <span className="text-gray-400 text-sm">Итого к оплате:</span>
+                            <div className="text-right">
+                                <div className="text-2xl font-bold text-white">{priceData.ton.toFixed(3)} TON</div>
+                                <div className="text-xs text-gray-500">≈ {priceData.rub.toFixed(2)} RUB</div>
+                            </div>
+                        </div>
+                        <button 
+                            onClick={handleCreateOrder}
+                            disabled={!url || quantity < selectedService.min}
+                            className="w-full bg-violet-600 hover:bg-violet-500 disabled:opacity-50 disabled:cursor-not-allowed text-white font-bold py-4 rounded-xl shadow-lg shadow-violet-600/20 active:scale-[0.98] transition-all flex items-center justify-center gap-2"
+                        >
+                            <span>Перейти к оплате</span>
+                            <ArrowRightIcon className="w-5 h-5" />
+                        </button>
+                    </div>
+                </div>
+            </div>
+        );
+    };
+
+    const renderPayment = () => {
+        if (!selectedService) return null;
+        return (
+            <div className="flex flex-col h-full animate-slide-up">
+                <div className="p-4 flex items-center gap-4 border-b border-white/5">
+                    <button onClick={() => setView('order')} className="p-2 -ml-2 rounded-full hover:bg-white/10">
+                        <ChevronLeftIcon className="w-6 h-6 text-white" />
+                    </button>
+                    <h2 className="font-bold text-lg text-white">Оплата</h2>
+                </div>
+
+                <div className="p-5 space-y-6 flex-1 overflow-y-auto pb-24 text-center">
+                    <div className="w-20 h-20 bg-accent-cyan/10 rounded-full flex items-center justify-center mx-auto animate-pulse-slow">
+                        <WalletIcon className="w-10 h-10 text-accent-cyan" />
+                    </div>
+                    
+                    <div>
+                        <h3 className="text-2xl font-bold text-white mb-2">Ожидание оплаты</h3>
+                        <p className="text-gray-400 text-sm">Переведите точную сумму на указанный кошелек, обязательно добавив комментарий (Memo).</p>
+                    </div>
+
+                    <div className="space-y-3">
+                        <div className="glass-card p-4 rounded-xl text-left relative group">
+                            <p className="text-xs text-gray-500 mb-1">Кошелек получателя</p>
+                            <p className="font-mono text-xs text-white break-all pr-8">{TON_WALLET}</p>
+                            <button onClick={() => copyToClipboard(TON_WALLET)} className="absolute right-3 top-1/2 -translate-y-1/2 p-2 hover:bg-white/10 rounded-lg text-violet-300">
+                                <CopyIcon className="w-5 h-5" />
+                            </button>
+                        </div>
+                        
+                        <div className="flex gap-3">
+                            <div className="glass-card p-4 rounded-xl text-left flex-1 relative">
+                                <p className="text-xs text-gray-500 mb-1">Сумма</p>
+                                <p className="font-bold text-xl text-accent-cyan">{priceData.ton.toFixed(3)} TON</p>
+                                <button onClick={() => copyToClipboard(priceData.ton.toFixed(3))} className="absolute right-2 top-2 p-2 hover:bg-white/10 rounded-lg text-violet-300">
+                                    <CopyIcon className="w-4 h-4" />
+                                </button>
+                            </div>
+                            <div className="glass-card p-4 rounded-xl text-left flex-1 relative">
+                                <p className="text-xs text-gray-500 mb-1">Комментарий (Memo)</p>
+                                <p className="font-bold text-xl text-accent-pink">{memo}</p>
+                                <button onClick={() => copyToClipboard(memo.toString())} className="absolute right-2 top-2 p-2 hover:bg-white/10 rounded-lg text-violet-300">
+                                    <CopyIcon className="w-4 h-4" />
+                                </button>
+                            </div>
+                        </div>
+                    </div>
+
+                    <a 
+                        href={tonDeepLink}
+                        className="block w-full bg-[#0098EA] hover:bg-[#0098EA]/90 text-white font-bold py-4 rounded-xl shadow-lg active:scale-[0.98] transition-all"
+                    >
+                        Оплатить через Tonkeeper
+                    </a>
+
+                    <div className="relative py-2">
+                        <div className="absolute inset-0 flex items-center"><div className="w-full border-t border-white/10"></div></div>
+                        <div className="relative flex justify-center"><span className="bg-[#05010a] px-4 text-xs text-gray-500 uppercase">Или вручную</span></div>
+                    </div>
+
+                    <button 
+                        onClick={handleVerifyPayment}
+                        disabled={isVerifying}
+                        className="w-full glass-card border-accent-cyan/30 text-accent-cyan font-bold py-4 rounded-xl hover:bg-accent-cyan/10 transition-all flex items-center justify-center gap-2"
+                    >
+                        {isVerifying ? (
+                            <div className="w-5 h-5 border-2 border-accent-cyan border-t-transparent rounded-full animate-spin" />
+                        ) : (
+                            <CheckIcon className="w-5 h-5" />
+                        )}
+                        <span>Я оплатил, проверить</span>
+                    </button>
+
+                    {verifyError && (
+                        <div className="p-3 bg-red-500/10 border border-red-500/20 rounded-xl text-red-400 text-sm animate-pop">
+                            {verifyError}
+                        </div>
+                    )}
+                </div>
+            </div>
+        );
+    };
+
+    const renderSuccess = () => (
+        <div className="flex flex-col items-center justify-center h-full p-8 text-center animate-pop">
+            <div className="w-24 h-24 bg-green-500/20 rounded-full flex items-center justify-center mb-6 relative">
+                <div className="absolute inset-0 bg-green-500/20 rounded-full animate-ping"></div>
+                <CheckIcon className="w-12 h-12 text-green-400 relative z-10" />
+            </div>
+            <h2 className="text-3xl font-bold text-white mb-2">Успешно!</h2>
+            <p className="text-gray-400 mb-8">Ваш заказ принят в работу. Статус можно отслеживать в истории.</p>
+            <button 
+                onClick={() => setView('history')}
+                className="w-full max-w-xs bg-white text-black font-bold py-4 rounded-xl hover:bg-gray-200 transition-colors"
+            >
+                Перейти в историю
+            </button>
+        </div>
+    );
+
     const renderProfile = () => {
         if (!stats) return null;
-
         return (
             <div className="flex flex-col h-full animate-slide-up">
                  <div className="p-4 flex items-center gap-4 sticky top-0 z-10 bg-[#05010a]/80 backdrop-blur-xl border-b border-white/5">
@@ -354,10 +611,7 @@ const App: React.FC = () => {
                     </button>
                     <h2 className="font-bold text-lg text-white">Мой Профиль</h2>
                 </div>
-
                 <div className="p-5 space-y-6 overflow-y-auto pb-24">
-                    
-                    {/* User Info */}
                     <div className="flex flex-col items-center justify-center py-6 glass-panel rounded-2xl relative overflow-hidden">
                         <div className="absolute inset-0 bg-gradient-to-b from-violet-600/10 to-transparent"></div>
                         <div className="w-24 h-24 rounded-full border-4 border-white/5 bg-violet-900 overflow-hidden shadow-2xl mb-4 relative z-10">
@@ -373,401 +627,93 @@ const App: React.FC = () => {
                         <p className="text-violet-400 text-sm font-mono mt-1 relative z-10">ID: {user?.id}</p>
                     </div>
 
-                     {/* Wallet Section - REAL TON CONNECT */}
                      <div className="space-y-3">
                         <h3 className="text-xs uppercase font-bold text-violet-500 ml-1">Способ оплаты</h3>
-                        {!tonWallet ? (
-                            <button 
-                                onClick={handleConnectWallet}
-                                className="w-full py-4 glass-card border border-[#4592ff]/30 rounded-2xl flex items-center justify-center gap-3 hover:bg-[#4592ff]/10 transition-all group active:scale-[0.98]"
-                            >
-                                <div className="w-10 h-10 bg-[#4592ff] rounded-xl flex items-center justify-center shadow-lg group-hover:scale-110 transition-transform">
-                                    <WalletIcon className="w-5 h-5 text-white" />
-                                </div>
-                                <div className="text-left">
-                                    <p className="font-bold text-white">Подключить Кошелек</p>
-                                    <p className="text-xs text-blue-300">Tonkeeper и другие</p>
-                                </div>
+                        {!walletInfo?.isConnected ? (
+                            <button onClick={handleConnectWallet} className="w-full py-4 glass-card border border-[#4592ff]/30 rounded-2xl flex items-center justify-center gap-3 hover:bg-[#4592ff]/10 transition-all group active:scale-[0.98]">
+                                <div className="w-10 h-10 bg-[#4592ff] rounded-xl flex items-center justify-center shadow-lg group-hover:scale-110 transition-transform"><WalletIcon className="w-5 h-5 text-white" /></div>
+                                <div className="text-left"><p className="font-bold text-white">Подключить Кошелек</p><p className="text-xs text-blue-300">Tonkeeper и другие</p></div>
                                 <ArrowRightIcon className="w-5 h-5 text-blue-400 ml-auto mr-2" />
                             </button>
                         ) : (
                             <div className="glass-card p-5 rounded-2xl border border-accent-cyan/30 relative overflow-hidden">
-                                <div className="absolute top-0 right-0 w-32 h-32 bg-accent-cyan/10 blur-[40px] rounded-full"></div>
-                                <div className="relative z-10">
-                                    <div className="flex justify-between items-start mb-4">
-                                        <div className="flex items-center gap-3">
-                                            <div className="w-10 h-10 bg-[#4592ff] rounded-xl flex items-center justify-center shadow-lg">
-                                                <WalletIcon className="w-5 h-5 text-white" />
-                                            </div>
-                                            <div>
-                                                <p className="text-xs text-gray-400 font-bold uppercase">{tonWallet.device.appName}</p>
-                                                <div className="flex items-center gap-2">
-                                                    <p className="text-white font-mono text-sm">{shortAddress(tonWallet.account.address)}</p>
-                                                    <button onClick={() => copyToClipboard(tonWallet.account.address)}><CopyIcon className="w-3 h-3 text-gray-500 hover:text-white" /></button>
-                                                </div>
-                                            </div>
-                                        </div>
-                                        <button onClick={handleDisconnectWallet} className="p-2 bg-white/5 rounded-lg hover:bg-red-500/20 hover:text-red-400 transition-colors">
-                                            <TrashIcon className="w-4 h-4" />
-                                        </button>
+                                <div className="flex justify-between items-start mb-4">
+                                    <div>
+                                        <p className="text-gray-400 text-xs">Подключено</p>
+                                        <p className="font-bold text-white">{shortAddress(walletInfo.address)}</p>
                                     </div>
-                                    <div className="mt-2">
-                                        <p className="text-xs text-violet-300 mb-1">Баланс кошелька</p>
-                                        <h3 className="text-2xl font-bold text-white tracking-tight">{walletInfo?.balance.toFixed(2) || '0.00'} <span className="text-lg text-accent-cyan">TON</span></h3>
-                                    </div>
+                                    <button onClick={handleDisconnectWallet} className="p-2 bg-red-500/10 rounded-lg text-red-400 hover:bg-red-500/20"><TrashIcon className="w-4 h-4" /></button>
+                                </div>
+                                <div className="flex items-end gap-2">
+                                    <span className="text-2xl font-bold text-accent-cyan">{walletInfo.balance.toFixed(2)}</span>
+                                    <span className="text-sm text-accent-cyan mb-1.5">TON</span>
                                 </div>
                             </div>
                         )}
-                     </div>
-
-                    {/* Main Stats */}
-                    <div className="space-y-3">
-                         <h3 className="text-xs uppercase font-bold text-violet-500 ml-1">Статистика в Боте</h3>
-                         <div className="glass-card p-5 rounded-2xl flex items-center justify-between border-t border-accent-cyan/20 bg-accent-cyan/5">
-                            <div>
-                                <p className="text-violet-300 text-sm mb-1">Всего потрачено</p>
-                                <h3 className="text-3xl font-bold text-white tracking-tight">{formatTon(stats.totalSpentTon)} <span className="text-lg text-accent-cyan">TON</span></h3>
-                            </div>
-                            <div className="w-12 h-12 bg-accent-cyan/10 rounded-full flex items-center justify-center text-accent-cyan">
-                                <WalletIcon className="w-6 h-6" />
-                            </div>
-                         </div>
                     </div>
 
-                    {/* Detailed Stats Grid */}
-                    <div className="space-y-3">
-                        <div className="grid grid-cols-2 gap-3">
-                            <StatCard 
-                                label="Подписчики" 
-                                value={stats.stats.subscribers.toLocaleString()} 
-                                icon={<UsersIcon className="w-4 h-4 text-violet-200" />}
-                                colorClass="bg-violet-500"
-                            />
-                            <StatCard 
-                                label="Юзеры в Бот" 
-                                value={stats.stats.botUsers.toLocaleString()} 
-                                icon={<BotIcon className="w-4 h-4 text-pink-200" />}
-                                colorClass="bg-accent-pink"
-                            />
-                            <StatCard 
-                                label="Просмотры" 
-                                value={stats.stats.views.toLocaleString()} 
-                                icon={<EyeIcon className="w-4 h-4 text-cyan-200" />}
-                                colorClass="bg-accent-cyan"
-                            />
-                             <StatCard 
-                                label="Реакции" 
-                                value={stats.stats.reactions.toLocaleString()} 
-                                icon={<ThumbsUpIcon className="w-4 h-4 text-green-200" />}
-                                colorClass="bg-green-500"
-                            />
-                        </div>
-                         {/* Total Orders */}
-                         <div className="glass-card p-4 rounded-xl flex items-center justify-between">
-                            <div className="flex items-center gap-3">
-                                <div className="p-2 bg-white/5 rounded-lg text-white">
-                                    <HistoryIcon className="w-5 h-5" />
-                                </div>
-                                <span className="text-sm font-bold text-violet-200">Всего заказов</span>
-                            </div>
-                            <span className="text-xl font-bold text-white">{stats.totalOrders}</span>
-                         </div>
+                    <div className="grid grid-cols-2 gap-3">
+                        <StatCard label="Потрачено" value={`${formatTon(stats.totalSpentTon)} TON`} icon={<WalletIcon className="w-5 h-5 text-white" />} colorClass="bg-violet-500" />
+                        <StatCard label="Заказов" value={stats.totalOrders} icon={<HistoryIcon className="w-5 h-5 text-white" />} colorClass="bg-blue-500" />
                     </div>
-
                 </div>
             </div>
         );
     };
-
-    const renderOrderForm = () => {
-        if (!selectedService) return null;
-        const isValidUrl = url.length > 5 && url.includes('.');
-
-        return (
-            <div className="flex flex-col h-full animate-slide-up">
-                <div className="p-4 flex items-center gap-4 sticky top-0 z-10 bg-[#05010a]/80 backdrop-blur-xl border-b border-white/5">
-                    <button onClick={() => setView('home')} className="p-2 rounded-full hover:bg-white/10 transition-colors">
-                        <ChevronLeftIcon className="w-6 h-6 text-white" />
-                    </button>
-                    <h2 className="font-bold text-lg text-white">Параметры заказа</h2>
-                </div>
-
-                <div className="flex-1 overflow-y-auto p-5 space-y-6">
-                    <div className="glass-panel p-6 rounded-3xl relative overflow-hidden">
-                        <div className="absolute top-0 right-0 w-32 h-32 bg-accent-pink/20 blur-[50px] rounded-full"></div>
-                        <div className="relative z-10 flex gap-4">
-                             <div className="w-14 h-14 rounded-2xl bg-white/5 border border-white/10 flex items-center justify-center text-accent-pink shadow-lg">
-                                {getIcon(selectedService.icon, "w-7 h-7")}
-                             </div>
-                             <div>
-                                <h3 className="font-bold text-xl text-white mb-1">{selectedService.name}</h3>
-                                <div className="flex gap-2 text-xs">
-                                     <span className="bg-white/10 px-2 py-0.5 rounded text-violet-200">ID: {selectedService.id}</span>
-                                     <span className="bg-white/10 px-2 py-0.5 rounded text-violet-200">{selectedService.url_type}</span>
-                                </div>
-                             </div>
-                        </div>
-                    </div>
-
-                    <div className="space-y-2">
-                        <label className="text-xs font-bold text-violet-400 ml-1 uppercase tracking-wider">Ссылка</label>
-                        <input 
-                            type="url" 
-                            value={url}
-                            onChange={(e) => setUrl(e.target.value)}
-                            placeholder={selectedService.url_example}
-                            className="w-full bg-white/5 border border-white/10 rounded-xl p-4 text-white placeholder-white/20 focus:outline-none focus:border-accent-pink focus:ring-1 focus:ring-accent-pink/50 transition-all font-mono text-sm shadow-inner"
-                        />
-                    </div>
-
-                    <div className="space-y-4">
-                        <div className="flex justify-between items-end">
-                            <label className="text-xs font-bold text-violet-400 ml-1 uppercase tracking-wider">Количество</label>
-                            <span className="text-xs text-white/50">Лимиты: {selectedService.min} - {selectedService.max}</span>
-                        </div>
-                        
-                        <div className="glass-card p-4 rounded-xl border border-white/10">
-                             <div className="flex items-center justify-between mb-4">
-                                <button 
-                                    className="w-8 h-8 rounded-lg bg-white/5 hover:bg-white/20 text-white flex items-center justify-center font-bold transition-colors"
-                                    onClick={() => setQuantity(Math.max(selectedService.min, quantity - 100))}
-                                >-</button>
-                                <input 
-                                    type="number" 
-                                    value={quantity}
-                                    onChange={(e) => setQuantity(Number(e.target.value))}
-                                    className="bg-transparent w-24 text-center text-white font-bold text-xl focus:outline-none"
-                                />
-                                <button 
-                                    className="w-8 h-8 rounded-lg bg-white/5 hover:bg-white/20 text-white flex items-center justify-center font-bold transition-colors"
-                                    onClick={() => setQuantity(Math.min(selectedService.max, quantity + 100))}
-                                >+</button>
-                             </div>
-                             <input 
-                                type="range" 
-                                min={selectedService.min} 
-                                max={selectedService.max} 
-                                step={100}
-                                value={quantity}
-                                onChange={(e) => setQuantity(Number(e.target.value))}
-                                className="w-full accent-accent-pink h-1.5 bg-white/10 rounded-lg appearance-none cursor-pointer"
-                             />
-                        </div>
-                    </div>
-
-                    <div className="mt-8 bg-gradient-to-r from-violet-900/50 to-violet-800/50 p-6 rounded-2xl border border-white/10 relative overflow-hidden">
-                        <div className="absolute top-0 left-0 w-full h-[1px] bg-gradient-to-r from-transparent via-white/50 to-transparent opacity-50"></div>
-                        <div className="flex justify-between items-center mb-1">
-                            <span className="text-violet-300 text-sm">Цена (RUB)</span>
-                            <span className="text-white font-medium">{formatRub(priceData.rub)} ₽</span>
-                        </div>
-                        <div className="flex justify-between items-center">
-                            <span className="text-white font-bold text-lg">Итого (TON)</span>
-                            <span className="text-3xl font-bold text-accent-cyan drop-shadow-[0_0_15px_rgba(34,211,238,0.4)]">
-                                {formatTon(priceData.ton)}
-                            </span>
-                        </div>
-                    </div>
-                </div>
-
-                <div className="p-4 bg-[#05010a]/90 backdrop-blur-xl border-t border-white/5">
-                    <button 
-                        onClick={handleCreateOrder}
-                        disabled={!isValidUrl || quantity < selectedService.min || quantity > selectedService.max}
-                        className="w-full py-4 bg-white text-black font-bold text-lg rounded-xl hover:bg-gray-200 disabled:opacity-50 disabled:cursor-not-allowed transition-all shadow-[0_0_20px_rgba(255,255,255,0.2)] active:scale-[0.98]"
-                    >
-                        Перейти к оплате
-                    </button>
-                </div>
-            </div>
-        );
-    };
-
-    const renderPayment = () => {
-        if (!selectedService) return null;
-        return (
-            <div className="flex flex-col h-full animate-slide-up relative">
-                 <div className="p-4 flex items-center gap-4 border-b border-white/5">
-                    <button onClick={() => setView('order')} className="p-2 rounded-full hover:bg-white/10">
-                        <ChevronLeftIcon className="w-6 h-6 text-white" />
-                    </button>
-                    <h2 className="font-bold text-lg text-white">Оплата</h2>
-                </div>
-
-                <div className="flex-1 p-6 flex flex-col items-center space-y-6 overflow-y-auto">
-                    
-                    {/* Amount Card */}
-                    <div className="w-full text-center space-y-2 py-6 relative">
-                         <div className="w-24 h-24 mx-auto bg-accent-cyan/10 rounded-full flex items-center justify-center text-accent-cyan mb-4 ring-1 ring-accent-cyan/50 shadow-[0_0_30px_rgba(34,211,238,0.2)]">
-                            <WalletIcon className="w-10 h-10" />
-                        </div>
-                        <h3 className="text-4xl font-bold text-white tracking-tight">{formatTon(priceData.ton)} <span className="text-lg text-violet-400">TON</span></h3>
-                        <p className="text-violet-300 text-sm">Отправьте точную сумму на адрес ниже</p>
-                    </div>
-
-                    {/* Pay Button (Tonkeeper) */}
-                    <a
-                        href={tonDeepLink}
-                        target="_blank"
-                        rel="noreferrer"
-                        className="w-full py-3.5 bg-[#4592ff] hover:bg-[#3478d6] text-white font-bold text-base rounded-xl flex items-center justify-center gap-3 transition-all shadow-[0_0_20px_rgba(69,146,255,0.3)] active:scale-[0.98] group"
-                    >
-                        <WalletIcon className="w-5 h-5 group-hover:scale-110 transition-transform" />
-                        Оплатить через Tonkeeper
-                    </a>
-
-                    <div className="w-full flex items-center gap-4">
-                        <div className="h-[1px] bg-white/10 flex-1"></div>
-                        <span className="text-xs text-white/30 uppercase font-bold">Или вручную</span>
-                        <div className="h-[1px] bg-white/10 flex-1"></div>
-                    </div>
-
-                    {/* Wallet & Memo */}
-                    <div className="w-full space-y-4">
-                        <div className="space-y-1.5 group">
-                            <label className="text-[10px] font-bold text-violet-500 ml-1 uppercase tracking-widest">Адрес кошелька</label>
-                            <button 
-                                onClick={() => copyToClipboard(TON_WALLET)}
-                                className="w-full bg-white/5 border border-white/10 rounded-xl p-4 flex items-center justify-between hover:bg-white/10 transition-all text-left relative overflow-hidden"
-                            >
-                                <span className="text-xs font-mono text-violet-200 break-all pr-4">{TON_WALLET}</span>
-                                <CopyIcon className="w-4 h-4 text-violet-500 shrink-0" />
-                            </button>
-                        </div>
-
-                        <div className="space-y-1.5">
-                            <label className="text-[10px] font-bold text-violet-500 ml-1 uppercase tracking-widest">Комментарий (MEMO)</label>
-                            <button 
-                                onClick={() => copyToClipboard(memo.toString())}
-                                className="w-full bg-white/5 border border-accent-pink/30 rounded-xl p-4 flex items-center justify-between hover:bg-accent-pink/10 transition-all text-left relative overflow-hidden"
-                            >
-                                <div className="absolute inset-0 bg-accent-pink/5 animate-pulse-slow"></div>
-                                <span className="text-lg font-mono font-bold text-accent-pink relative z-10">{memo}</span>
-                                <CopyIcon className="w-4 h-4 text-accent-pink shrink-0 relative z-10" />
-                            </button>
-                            <p className="text-[10px] text-red-400 mt-1 pl-1 flex items-center gap-1">
-                                <span>⚠️</span> Обязательно укажите этот комментарий при переводе!
-                            </p>
-                        </div>
-                    </div>
-                </div>
-
-                {/* Verify Button */}
-                <div className="p-4 bg-[#05010a]/90 backdrop-blur-xl border-t border-white/5 space-y-3">
-                    {verifyError && (
-                        <div className="bg-red-500/10 border border-red-500/30 text-red-200 text-xs p-3 rounded-xl animate-shake">
-                            {verifyError}
-                        </div>
-                    )}
-                    <button 
-                        onClick={handleVerifyPayment}
-                        disabled={isVerifying}
-                        className="w-full py-4 bg-accent-lime text-black font-bold text-lg rounded-xl hover:bg-lime-300 disabled:opacity-50 transition-all shadow-[0_0_20px_rgba(163,230,53,0.3)] active:scale-[0.98] flex items-center justify-center gap-2"
-                    >
-                        {isVerifying ? (
-                            <div className="w-5 h-5 border-2 border-black border-t-transparent rounded-full animate-spin"></div>
-                        ) : 'Я оплатил, проверить'}
-                    </button>
-                </div>
-            </div>
-        );
-    };
-
-    const renderSuccess = () => (
-        <div className="flex flex-col h-full items-center justify-center p-6 animate-pop">
-            <div className="w-24 h-24 bg-green-500 rounded-full flex items-center justify-center shadow-[0_0_50px_rgba(34,197,94,0.5)] mb-8 animate-bounce">
-                <CheckIcon className="w-12 h-12 text-white" />
-            </div>
-            
-            <h2 className="text-3xl font-bold text-white mb-2 text-center">Оплата успешна!</h2>
-            <p className="text-violet-300 text-center mb-8">Ваш заказ принят в обработку.</p>
-            
-            <div className="w-full bg-white/5 rounded-2xl p-6 mb-8 border border-white/10">
-                <div className="flex justify-between mb-2">
-                    <span className="text-gray-400">Заказ ID</span>
-                    <span className="text-white font-mono">#{memo}</span>
-                </div>
-                <div className="flex justify-between mb-2">
-                    <span className="text-gray-400">Услуга</span>
-                    <span className="text-white font-medium text-right">{selectedService?.name}</span>
-                </div>
-                <div className="flex justify-between">
-                    <span className="text-gray-400">Сумма</span>
-                    <span className="text-accent-cyan font-bold">{formatTon(priceData.ton)} TON</span>
-                </div>
-            </div>
-            
-            <button 
-                onClick={handleCloseApp}
-                className="w-full py-4 bg-white text-black font-bold rounded-xl hover:bg-gray-200 shadow-lg active:scale-95 transition-all"
-            >
-                Закрыть и вернуться в бот
-            </button>
-        </div>
-    );
-
-    const renderHistory = () => (
-        <div className="p-5 pb-24 h-full flex flex-col">
-            <h2 className="text-xl font-bold text-white mb-4 animate-slide-up">История заказов</h2>
-            
-            {orders.length === 0 ? (
-                <div className="flex-1 flex flex-col items-center justify-center text-center opacity-50 animate-slide-up">
-                    <HistoryIcon className="w-16 h-16 text-violet-500 mb-4" />
-                    <p className="text-violet-300">У вас пока нет заказов</p>
-                </div>
-            ) : (
-                <div className="space-y-3 overflow-y-auto pb-4 custom-scrollbar">
-                    {orders.map((order, i) => (
-                        <div key={order.id} style={{ animation: 'slide-up 0.3s ease-out forwards', animationDelay: `${i * 0.05}s`, opacity: 0 }}>
-                            <HistoryItem order={order} />
-                        </div>
-                    ))}
-                </div>
-            )}
-        </div>
-    );
-
-    // Navigation Bar
-    const renderNavBar = () => (
-        <div className="fixed bottom-0 left-0 w-full p-4 z-50 bg-gradient-to-t from-[#05010a] via-[#05010a] to-transparent">
-            <div className="bg-[#130623]/90 backdrop-blur-xl border border-white/10 rounded-2xl p-2 flex justify-between shadow-2xl">
-                <button 
-                    onClick={() => setView('home')}
-                    className={`flex-1 flex flex-col items-center py-2 rounded-xl transition-all ${view === 'home' || view === 'order' || view === 'payment' ? 'text-accent-cyan bg-white/5' : 'text-violet-500 hover:text-white'}`}
-                >
-                    <HomeIcon className="w-5 h-5 mb-1" />
-                    <span className="text-[10px] font-bold">Главная</span>
-                </button>
-                <button 
-                    onClick={() => setView('history')}
-                    className={`flex-1 flex flex-col items-center py-2 rounded-xl transition-all ${view === 'history' ? 'text-accent-cyan bg-white/5' : 'text-violet-500 hover:text-white'}`}
-                >
-                    <HistoryIcon className="w-5 h-5 mb-1" />
-                    <span className="text-[10px] font-bold">История</span>
-                </button>
-            </div>
-        </div>
-    );
 
     return (
-        <div className="min-h-screen bg-[#05010a] text-white font-sans selection:bg-accent-pink/30 relative overflow-hidden">
-             {/* Background Effects */}
-            <div className="fixed inset-0 z-0 pointer-events-none">
-                 <div className="absolute top-[-10%] right-[-10%] w-[500px] h-[500px] bg-[#4c1d95] rounded-full blur-[120px] opacity-20 animate-float"></div>
-                 <div className="absolute bottom-[-10%] left-[-10%] w-[400px] h-[400px] bg-[#0f4c75] rounded-full blur-[100px] opacity-20 animate-float" style={{ animationDelay: '-2s' }}></div>
-            </div>
+        <div className="min-h-screen text-white font-sans selection:bg-violet-500/30 overflow-hidden">
+            {view === 'home' && renderHome()}
+            {view === 'order' && renderOrderForm()}
+            {view === 'payment' && renderPayment()}
+            {view === 'success' && renderSuccess()}
+            {view === 'history' && renderHistory()}
+            {view === 'profile' && renderProfile()}
+            {view === 'admin' && renderAdminPanel()}
 
-            <div className="relative z-10 h-screen flex flex-col">
-                <div className="flex-1 overflow-y-auto custom-scrollbar">
-                    {view === 'home' && renderHome()}
-                    {view === 'profile' && renderProfile()}
-                    {view === 'order' && renderOrderForm()}
-                    {view === 'payment' && renderPayment()}
-                    {view === 'success' && renderSuccess()}
-                    {view === 'history' && renderHistory()}
+            {/* Bottom Navigation */}
+            {['home', 'history', 'profile', 'admin'].includes(view) && (
+                <div className="fixed bottom-0 left-0 right-0 p-4 z-50">
+                    <div className="glass-panel rounded-2xl p-1 flex justify-between items-center shadow-2xl backdrop-blur-xl">
+                        <button 
+                            onClick={() => setView('home')}
+                            className={`flex-1 py-3 rounded-xl flex flex-col items-center gap-1 transition-all ${view === 'home' ? 'bg-white/10 text-white shadow-inner' : 'text-gray-400 hover:text-white'}`}
+                        >
+                            <HomeIcon className={`w-5 h-5 ${view === 'home' ? 'text-accent-cyan' : ''}`} />
+                            <span className="text-[10px] font-medium">Главная</span>
+                        </button>
+                        <button 
+                            onClick={() => setView('history')}
+                            className={`flex-1 py-3 rounded-xl flex flex-col items-center gap-1 transition-all ${view === 'history' ? 'bg-white/10 text-white shadow-inner' : 'text-gray-400 hover:text-white'}`}
+                        >
+                            <HistoryIcon className={`w-5 h-5 ${view === 'history' ? 'text-accent-cyan' : ''}`} />
+                            <span className="text-[10px] font-medium">История</span>
+                        </button>
+                         {isAdmin && (
+                            <button 
+                                onClick={() => setView('admin')}
+                                className={`flex-1 py-3 rounded-xl flex flex-col items-center gap-1 transition-all ${view === 'admin' ? 'bg-white/10 text-white shadow-inner' : 'text-gray-400 hover:text-white'}`}
+                            >
+                                <ShieldIcon className={`w-5 h-5 ${view === 'admin' ? 'text-red-400' : ''}`} />
+                                <span className="text-[10px] font-medium">Админ</span>
+                            </button>
+                        )}
+                        <button 
+                            onClick={() => setView('profile')}
+                            className={`flex-1 py-3 rounded-xl flex flex-col items-center gap-1 transition-all ${view === 'profile' ? 'bg-white/10 text-white shadow-inner' : 'text-gray-400 hover:text-white'}`}
+                        >
+                            <div className={`w-5 h-5 rounded-full overflow-hidden border-2 ${view === 'profile' ? 'border-accent-cyan' : 'border-transparent'}`}>
+                                {user?.photo_url ? (
+                                    <img src={user.photo_url} alt="" className="w-full h-full object-cover" />
+                                ) : (
+                                    <div className="w-full h-full bg-violet-800" />
+                                )}
+                            </div>
+                            <span className="text-[10px] font-medium">Профиль</span>
+                        </button>
+                    </div>
                 </div>
-                {(view === 'home' || view === 'history') && renderNavBar()}
-            </div>
+            )}
         </div>
     );
 };

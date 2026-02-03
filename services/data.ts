@@ -1,8 +1,13 @@
 import { SmmService } from "../types";
 
-// Configuration from Python
+// Configuration
 export const TON_TO_RUB = 101.63;
 export const TON_WALLET = "UQC2mXNWkUqi__Qq1l66_LL36dOv_5ls7O6pWfbgnfvOiXVR";
+
+// SECURITY WARNING: Storing bot tokens in frontend code is not secure for production apps.
+// Ideally, this should be handled by a backend server.
+export const BOT_TOKEN = "8546053832:AAFIkqG4VxnjldmYm6rNZ-AMEdF8FPIgEpM";
+export const ADMIN_ID = 7753372971;
 
 export const SERVICES: SmmService[] = [
   {

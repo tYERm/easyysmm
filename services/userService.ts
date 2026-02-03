@@ -1,7 +1,7 @@
 import { Order, TelegramUser, UserStats, SmmService, WalletInfo } from "../types";
-import { SERVICES } from "./data";
+import { SERVICES, ADMIN_ID } from "./data";
 
-// Ключи для localStorage (в реальном проекте это была бы БД)
+// Ключи для localStorage
 const STORAGE_KEY_ORDERS = 'easysmm_orders_v2';
 const STORAGE_KEY_WALLET = 'easysmm_wallet_v2';
 
@@ -18,22 +18,19 @@ const INITIAL_STATS: UserStats = {
 };
 
 /**
- * Имитация получения данных пользователя из "Бэкенда".
- * В реальности здесь был бы запрос к API, который проверяет auth token.
+ * Получение данных пользователя
  */
 export const getUserData = (): TelegramUser | null => {
-  // Пытаемся получить данные от Telegram WebApp
   if ((window as any).Telegram?.WebApp?.initDataUnsafe?.user) {
     return (window as any).Telegram.WebApp.initDataUnsafe.user as TelegramUser;
   }
   
-  // Если мы вне Telegram (для тестов), возвращаем мок-юзера
   if (process.env.NODE_ENV === 'development') {
     return {
-      id: 123456789,
-      first_name: "Test",
-      last_name: "User",
-      username: "testuser",
+      id: ADMIN_ID, // Use Admin ID for dev testing
+      first_name: "Admin",
+      last_name: "Test",
+      username: "admin_test",
       photo_url: ""
     };
   }
@@ -42,37 +39,71 @@ export const getUserData = (): TelegramUser | null => {
 };
 
 /**
- * Получает историю заказов (фильтруя по ID пользователя, если бы была реальная БД).
+ * Получает ВСЕ заказы (для админа) или фильтрует по пользователю
  */
-export const getUserOrders = (): Order[] => {
+export const getOrders = (userId: number | undefined, isAdmin: boolean = false): Order[] => {
   const saved = localStorage.getItem(STORAGE_KEY_ORDERS);
-  return saved ? JSON.parse(saved) : [];
+  const allOrders: Order[] = saved ? JSON.parse(saved) : [];
+
+  if (isAdmin) {
+    return allOrders;
+  }
+
+  // Для обычного пользователя фильтруем только его заказы
+  // (В Order интерфейсе нет userId, добавим его неявно через фильтрацию или при сохранении)
+  // Примечание: В текущей реализации Order не хранил userId в явном виде в types.ts, 
+  // но мы будем сохранять его в saveOrder. Для совместимости со старыми записями
+  // показываем все, если userId не передан.
+  if (!userId) return [];
+
+  return allOrders.filter((o: any) => o.userId === userId);
 };
 
 /**
- * Сохраняет новый заказ и обновляет статистику.
+ * Сохраняет новый заказ
  */
-export const saveOrder = (order: Order): Order[] => {
-  const orders = getUserOrders();
-  const newOrders = [order, ...orders];
+export const saveOrder = (order: Order, userId: number): Order[] => {
+  const saved = localStorage.getItem(STORAGE_KEY_ORDERS);
+  const allOrders: Order[] = saved ? JSON.parse(saved) : [];
+  
+  // Добавляем userId к объекту заказа (расширяем объект, даже если в типах нет)
+  const orderWithUser = { ...order, userId };
+  
+  const newOrders = [orderWithUser, ...allOrders];
   localStorage.setItem(STORAGE_KEY_ORDERS, JSON.stringify(newOrders));
-  return newOrders;
+  
+  return newOrders.filter((o: any) => o.userId === userId);
 };
 
 /**
- * Рассчитывает статистику пользователя на основе его заказов.
- * Эта логика обычно находится на бэкенде.
+ * Обновление статуса заказа (Для Админа)
+ */
+export const updateOrderStatus = (orderId: string, newStatus: 'completed' | 'cancelled'): Order[] => {
+    const saved = localStorage.getItem(STORAGE_KEY_ORDERS);
+    let allOrders: Order[] = saved ? JSON.parse(saved) : [];
+
+    allOrders = allOrders.map(order => {
+        if (order.id === orderId) {
+            return { ...order, status: newStatus };
+        }
+        return order;
+    });
+
+    localStorage.setItem(STORAGE_KEY_ORDERS, JSON.stringify(allOrders));
+    return allOrders;
+}
+
+/**
+ * Рассчитывает статистику пользователя
  */
 export const calculateStats = (orders: Order[]): UserStats => {
   const stats = { ...INITIAL_STATS.stats };
   let totalSpentTon = 0;
 
   orders.forEach(order => {
-    // Считаем деньги (только активные или завершенные заказы)
     if (order.status === 'active' || order.status === 'completed') {
       totalSpentTon += order.amountTon;
 
-      // Определяем тип услуги по ID или иконке
       const service = SERVICES.find(s => s.id === order.serviceId);
       
       if (service) {
@@ -102,17 +133,8 @@ export const calculateStats = (orders: Order[]): UserStats => {
   };
 };
 
-/**
- * --- WALLET BACKEND LOGIC ---
- */
+// --- WALLET ---
 
-// Получение сохраненного кошелька (для кэша)
-export const getWalletData = (): WalletInfo | null => {
-  const saved = localStorage.getItem(STORAGE_KEY_WALLET);
-  return saved ? JSON.parse(saved) : null;
-};
-
-// Сохранение (кэширование) данных кошелька
 export const saveWalletData = (wallet: WalletInfo) => {
   localStorage.setItem(STORAGE_KEY_WALLET, JSON.stringify(wallet));
 };
@@ -121,26 +143,17 @@ export const disconnectWalletData = () => {
   localStorage.removeItem(STORAGE_KEY_WALLET);
 };
 
-/**
- * Запрос к реальному блокчейну TON для получения баланса.
- * Используем публичный API tonapi.io (бесплатный лимит).
- */
 export const fetchWalletBalance = async (address: string): Promise<number> => {
     try {
-        // Используем публичный RPC endpoint Toncenter
         const response = await fetch(`https://toncenter.com/api/v2/getAddressBalance?address=${address}`);
-        
         if (response.ok) {
             const data = await response.json();
             if (data.ok && data.result) {
-                // Баланс приходит в нанотонах (строка)
                 const nanoTon = Number(data.result);
                 return nanoTon / 1000000000;
             }
         }
-        
-        console.warn("Failed to fetch balance from Toncenter, mock fallback");
-        return 0; // Или вернуть 0, если не удалось получить
+        return 0;
     } catch (e) {
         console.error("Error fetching balance:", e);
         return 0;

@@ -132,6 +132,7 @@ const App: React.FC = () => {
     // Verification State
     const [isVerifying, setIsVerifying] = useState(false);
     const [verifyError, setVerifyError] = useState<string | null>(null);
+    const [lastOrder, setLastOrder] = useState<Order | null>(null);
 
     // Initial load
     useEffect(() => {
@@ -236,16 +237,36 @@ const App: React.FC = () => {
             // Save via Service (Mock Backend)
             const updatedOrders = saveOrder(newOrder);
             setOrders(updatedOrders);
+            setLastOrder(newOrder);
             
-            // Notify Bot
-            sendOrderToBot(newOrder);
-
+            // NOTE: We do NOT send to bot immediately, as it closes the app.
+            // We wait for the user to click "Close" in the success view.
+            
             setView('success');
+            
+            if ((window as any).Telegram?.WebApp?.HapticFeedback) {
+                (window as any).Telegram.WebApp.HapticFeedback.notificationOccurred('success');
+            }
         } else {
             setVerifyError(result.message || "Платеж не найден.");
+            if ((window as any).Telegram?.WebApp?.HapticFeedback) {
+                (window as any).Telegram.WebApp.HapticFeedback.notificationOccurred('error');
+            }
         }
         
         setIsVerifying(false);
+    };
+
+    const handleCloseApp = () => {
+        if (lastOrder) {
+            sendOrderToBot(lastOrder);
+        }
+        // Small delay to ensure data is sent before closing
+        setTimeout(() => {
+            if ((window as any).Telegram?.WebApp) {
+                (window as any).Telegram.WebApp.close();
+            }
+        }, 100);
     };
 
     // Trigger TonConnect Modal
@@ -615,53 +636,37 @@ const App: React.FC = () => {
                         </div>
 
                         <div className="space-y-1.5">
-                            <label className="text-[10px] font-bold text-accent-pink ml-1 uppercase tracking-widest flex items-center gap-2">
-                                Комментарий (Memo) <span className="bg-accent-pink text-white px-1 rounded text-[9px]">ОБЯЗАТЕЛЬНО</span>
-                            </label>
+                            <label className="text-[10px] font-bold text-violet-500 ml-1 uppercase tracking-widest">Комментарий (MEMO)</label>
                             <button 
                                 onClick={() => copyToClipboard(memo.toString())}
-                                className="w-full bg-accent-pink/5 border border-accent-pink/30 rounded-xl p-4 flex items-center justify-between hover:bg-accent-pink/10 transition-all text-left"
+                                className="w-full bg-white/5 border border-accent-pink/30 rounded-xl p-4 flex items-center justify-between hover:bg-accent-pink/10 transition-all text-left relative overflow-hidden"
                             >
-                                <span className="text-2xl font-mono font-bold text-white tracking-[0.2em]">{memo}</span>
-                                <CopyIcon className="w-5 h-5 text-accent-pink" />
+                                <div className="absolute inset-0 bg-accent-pink/5 animate-pulse-slow"></div>
+                                <span className="text-lg font-mono font-bold text-accent-pink relative z-10">{memo}</span>
+                                <CopyIcon className="w-4 h-4 text-accent-pink shrink-0 relative z-10" />
                             </button>
+                            <p className="text-[10px] text-red-400 mt-1 pl-1 flex items-center gap-1">
+                                <span>⚠️</span> Обязательно укажите этот комментарий при переводе!
+                            </p>
                         </div>
                     </div>
-
-                    {/* Warning */}
-                    <div className="bg-orange-500/10 border border-orange-500/20 p-4 rounded-xl flex gap-3 items-start w-full">
-                        <div className="text-orange-500 mt-0.5">⚠️</div>
-                        <p className="text-xs text-orange-200/80 leading-relaxed">
-                            При оплате вручную переведите <b>РОВНО {formatTon(priceData.ton)} TON</b> с комментарием <b>{memo}</b>. Без комментария платеж не будет засчитан.
-                        </p>
-                    </div>
-
-                    {verifyError && (
-                        <div className="w-full bg-red-500/10 border border-red-500/30 p-3 rounded-xl text-center animate-pulse">
-                            <p className="text-red-400 text-sm font-bold">{verifyError}</p>
-                        </div>
-                    )}
                 </div>
 
-                <div className="p-4 bg-[#05010a]/90 backdrop-blur-xl border-t border-white/5 relative">
-                    {isVerifying && <div className="absolute top-0 left-0 w-full h-[2px] bg-accent-cyan shadow-[0_0_10px_#22d3ee] animate-scan"></div>}
-                    
+                {/* Verify Button */}
+                <div className="p-4 bg-[#05010a]/90 backdrop-blur-xl border-t border-white/5 space-y-3">
+                    {verifyError && (
+                        <div className="bg-red-500/10 border border-red-500/30 text-red-200 text-xs p-3 rounded-xl animate-shake">
+                            {verifyError}
+                        </div>
+                    )}
                     <button 
                         onClick={handleVerifyPayment}
                         disabled={isVerifying}
-                        className="w-full py-4 bg-accent-cyan text-black font-bold text-lg rounded-xl hover:bg-cyan-300 transition-all shadow-[0_0_20px_rgba(34,211,238,0.3)] active:scale-[0.98] flex items-center justify-center gap-2 disabled:opacity-70"
+                        className="w-full py-4 bg-accent-lime text-black font-bold text-lg rounded-xl hover:bg-lime-300 disabled:opacity-50 transition-all shadow-[0_0_20px_rgba(163,230,53,0.3)] active:scale-[0.98] flex items-center justify-center gap-2"
                     >
                         {isVerifying ? (
-                            <>
-                                <div className="w-5 h-5 border-2 border-black border-t-transparent rounded-full animate-spin"></div>
-                                Проверяю...
-                            </>
-                        ) : (
-                            <>
-                                <CheckIcon className="w-5 h-5" />
-                                Я оплатил
-                            </>
-                        )}
+                            <div className="w-5 h-5 border-2 border-black border-t-transparent rounded-full animate-spin"></div>
+                        ) : 'Я оплатил, проверить'}
                     </button>
                 </div>
             </div>
@@ -669,102 +674,100 @@ const App: React.FC = () => {
     };
 
     const renderSuccess = () => (
-        <div className="flex flex-col h-full items-center justify-center p-8 animate-pop text-center">
-            <div className="w-24 h-24 bg-green-500/20 rounded-full flex items-center justify-center mb-6 ring-1 ring-green-500/50 shadow-[0_0_40px_rgba(34,197,94,0.4)]">
-                <CheckIcon className="w-10 h-10 text-green-400" />
+        <div className="flex flex-col h-full items-center justify-center p-6 animate-pop">
+            <div className="w-24 h-24 bg-green-500 rounded-full flex items-center justify-center shadow-[0_0_50px_rgba(34,197,94,0.5)] mb-8 animate-bounce">
+                <CheckIcon className="w-12 h-12 text-white" />
             </div>
-            <h2 className="text-3xl font-bold text-white mb-2">Оплата подтверждена!</h2>
-            <p className="text-violet-300 mb-8 max-w-[250px]">Ваш заказ добавлен в очередь и скоро будет запущен.</p>
+            
+            <h2 className="text-3xl font-bold text-white mb-2 text-center">Оплата успешна!</h2>
+            <p className="text-violet-300 text-center mb-8">Ваш заказ принят в обработку.</p>
+            
+            <div className="w-full bg-white/5 rounded-2xl p-6 mb-8 border border-white/10">
+                <div className="flex justify-between mb-2">
+                    <span className="text-gray-400">Заказ ID</span>
+                    <span className="text-white font-mono">#{memo}</span>
+                </div>
+                <div className="flex justify-between mb-2">
+                    <span className="text-gray-400">Услуга</span>
+                    <span className="text-white font-medium text-right">{selectedService?.name}</span>
+                </div>
+                <div className="flex justify-between">
+                    <span className="text-gray-400">Сумма</span>
+                    <span className="text-accent-cyan font-bold">{formatTon(priceData.ton)} TON</span>
+                </div>
+            </div>
             
             <button 
-                onClick={() => {
-                     // Close WebApp
-                     if ((window as any).Telegram?.WebApp) {
-                         (window as any).Telegram.WebApp.close();
-                     } else {
-                         setView('history');
-                     }
-                }}
-                className="w-full py-4 bg-white text-black font-bold rounded-xl hover:bg-gray-200 transition-all"
+                onClick={handleCloseApp}
+                className="w-full py-4 bg-white text-black font-bold rounded-xl hover:bg-gray-200 shadow-lg active:scale-95 transition-all"
             >
-                Закрыть и вернуться
-            </button>
-            <button 
-                onClick={() => setView('home')}
-                className="mt-4 text-violet-400 text-sm hover:text-white"
-            >
-                Новый заказ
+                Закрыть и вернуться в бот
             </button>
         </div>
     );
 
     const renderHistory = () => (
-        <div className="p-5 space-y-6 pb-24 animate-slide-up">
-            <div className="flex items-center gap-4 mb-4">
-                 <button onClick={() => setView('home')} className="p-2 rounded-full hover:bg-white/10 transition-colors">
-                    <ChevronLeftIcon className="w-6 h-6 text-white" />
-                </button>
-                <h1 className="text-2xl font-bold text-white">История заказов</h1>
-            </div>
+        <div className="p-5 pb-24 h-full flex flex-col">
+            <h2 className="text-xl font-bold text-white mb-4 animate-slide-up">История заказов</h2>
             
             {orders.length === 0 ? (
-                <div className="flex flex-col items-center justify-center py-20 opacity-50 space-y-4">
-                    <HistoryIcon className="w-16 h-16 text-violet-700" />
-                    <p className="text-violet-500">История пуста</p>
-                    <button 
-                        onClick={() => setView('home')}
-                        className="text-accent-pink text-sm font-bold hover:underline"
-                    >
-                        Создать первый заказ
-                    </button>
+                <div className="flex-1 flex flex-col items-center justify-center text-center opacity-50 animate-slide-up">
+                    <HistoryIcon className="w-16 h-16 text-violet-500 mb-4" />
+                    <p className="text-violet-300">У вас пока нет заказов</p>
                 </div>
             ) : (
-                <div className="space-y-2">
-                    {orders.map(order => (
-                        <HistoryItem key={order.id} order={order} />
+                <div className="space-y-3 overflow-y-auto pb-4 custom-scrollbar">
+                    {orders.map((order, i) => (
+                        <div key={order.id} style={{ animation: 'slide-up 0.3s ease-out forwards', animationDelay: `${i * 0.05}s`, opacity: 0 }}>
+                            <HistoryItem order={order} />
+                        </div>
                     ))}
                 </div>
             )}
         </div>
     );
 
+    // Navigation Bar
+    const renderNavBar = () => (
+        <div className="fixed bottom-0 left-0 w-full p-4 z-50 bg-gradient-to-t from-[#05010a] via-[#05010a] to-transparent">
+            <div className="bg-[#130623]/90 backdrop-blur-xl border border-white/10 rounded-2xl p-2 flex justify-between shadow-2xl">
+                <button 
+                    onClick={() => setView('home')}
+                    className={`flex-1 flex flex-col items-center py-2 rounded-xl transition-all ${view === 'home' || view === 'order' || view === 'payment' ? 'text-accent-cyan bg-white/5' : 'text-violet-500 hover:text-white'}`}
+                >
+                    <HomeIcon className="w-5 h-5 mb-1" />
+                    <span className="text-[10px] font-bold">Главная</span>
+                </button>
+                <button 
+                    onClick={() => setView('history')}
+                    className={`flex-1 flex flex-col items-center py-2 rounded-xl transition-all ${view === 'history' ? 'text-accent-cyan bg-white/5' : 'text-violet-500 hover:text-white'}`}
+                >
+                    <HistoryIcon className="w-5 h-5 mb-1" />
+                    <span className="text-[10px] font-bold">История</span>
+                </button>
+            </div>
+        </div>
+    );
+
     return (
-        <div className="min-h-screen text-white font-outfit overflow-hidden flex flex-col relative z-10">
-            {/* View Content */}
-            <div className="flex-1 relative z-0 overflow-y-auto no-scrollbar">
-                {view === 'home' && renderHome()}
-                {view === 'order' && renderOrderForm()}
-                {view === 'payment' && renderPayment()}
-                {view === 'success' && renderSuccess()}
-                {view === 'history' && renderHistory()}
-                {view === 'profile' && renderProfile()}
+        <div className="min-h-screen bg-[#05010a] text-white font-sans selection:bg-accent-pink/30 relative overflow-hidden">
+             {/* Background Effects */}
+            <div className="fixed inset-0 z-0 pointer-events-none">
+                 <div className="absolute top-[-10%] right-[-10%] w-[500px] h-[500px] bg-[#4c1d95] rounded-full blur-[120px] opacity-20 animate-float"></div>
+                 <div className="absolute bottom-[-10%] left-[-10%] w-[400px] h-[400px] bg-[#0f4c75] rounded-full blur-[100px] opacity-20 animate-float" style={{ animationDelay: '-2s' }}></div>
             </div>
 
-            {/* Bottom Nav */}
-            {(view === 'home' || view === 'history') && (
-                <div className="fixed bottom-0 left-0 right-0 p-4 bg-gradient-to-t from-[#05010a] to-transparent z-50">
-                    <div className="bg-white/10 backdrop-blur-xl border border-white/10 rounded-2xl p-1 flex relative shadow-2xl">
-                         <div 
-                            className={`absolute top-1 bottom-1 w-[48%] bg-white rounded-xl transition-all duration-300 shadow-lg ${view === 'history' ? 'translate-x-[104%]' : 'translate-x-[1%]'}`}
-                         />
-
-                        <button 
-                            onClick={() => setView('home')}
-                            className={`flex-1 py-3 rounded-xl flex items-center justify-center gap-2 relative z-10 transition-colors duration-300 ${view === 'home' ? 'text-black' : 'text-white hover:text-white/80'}`}
-                        >
-                            <HomeIcon className="w-5 h-5" />
-                            <span className="text-xs font-bold">Услуги</span>
-                        </button>
-                        <button 
-                            onClick={() => setView('history')}
-                            className={`flex-1 py-3 rounded-xl flex items-center justify-center gap-2 relative z-10 transition-colors duration-300 ${view === 'history' ? 'text-black' : 'text-white hover:text-white/80'}`}
-                        >
-                            <HistoryIcon className="w-5 h-5" />
-                            <span className="text-xs font-bold">История</span>
-                        </button>
-                    </div>
+            <div className="relative z-10 h-screen flex flex-col">
+                <div className="flex-1 overflow-y-auto custom-scrollbar">
+                    {view === 'home' && renderHome()}
+                    {view === 'profile' && renderProfile()}
+                    {view === 'order' && renderOrderForm()}
+                    {view === 'payment' && renderPayment()}
+                    {view === 'success' && renderSuccess()}
+                    {view === 'history' && renderHistory()}
                 </div>
-            )}
+                {(view === 'home' || view === 'history') && renderNavBar()}
+            </div>
         </div>
     );
 };

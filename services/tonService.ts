@@ -10,6 +10,11 @@ export interface VerificationResult {
   txHash?: string;
 }
 
+/**
+ * Проверка платежа через TON API
+ * @param expectedMemo - ожидаемый комментарий (MEMO)
+ * @param expectedAmountTon - ожидаемая сумма в TON
+ */
 export const verifyPayment = async (
   expectedMemo: string, 
   expectedAmountTon: number
@@ -69,13 +74,18 @@ export const verifyPayment = async (
   }
 };
 
+/**
+ * Отправка данных заказа боту через Telegram WebApp API
+ * @param order - объект заказа
+ */
 export const sendOrderToBot = (order: any) => {
   if ((window as any).Telegram?.WebApp) {
     const tg = (window as any).Telegram.WebApp;
     
+    // Формируем полный payload с всеми необходимыми данными
     const payload = {
       type: 'order_paid',
-      order_id: order.id,
+      service_id: order.serviceId,
       service: order.serviceName,
       url: order.url,
       quantity: order.quantity,
@@ -85,6 +95,84 @@ export const sendOrderToBot = (order: any) => {
       timestamp: new Date().toISOString()
     };
 
-    tg.sendData(JSON.stringify(payload));
+    console.log('Отправка данных боту:', payload);
+
+    try {
+      // Отправляем данные боту
+      tg.sendData(JSON.stringify(payload));
+      
+      // Логируем успешную отправку
+      console.log('Данные успешно отправлены боту');
+      
+      // Показываем haptic feedback
+      if (tg.HapticFeedback) {
+        tg.HapticFeedback.notificationOccurred('success');
+      }
+      
+      // Закрываем WebApp после небольшой задержки
+      setTimeout(() => {
+        tg.close();
+      }, 1000);
+      
+    } catch (error) {
+      console.error('Ошибка отправки данных боту:', error);
+      
+      // Показываем ошибку пользователю
+      if (tg.HapticFeedback) {
+        tg.HapticFeedback.notificationOccurred('error');
+      }
+      
+      tg.showAlert('Ошибка отправки данных. Пожалуйста, обратитесь в поддержку.');
+    }
+  } else {
+    console.error('Telegram WebApp API недоступен');
+    alert('Ошибка: WebApp должен быть открыт из Telegram');
   }
+};
+
+/**
+ * Проверка доступности Telegram WebApp API
+ */
+export const isTelegramWebApp = (): boolean => {
+  return !!(window as any).Telegram?.WebApp;
+};
+
+/**
+ * Получение данных пользователя из Telegram
+ */
+export const getTelegramUser = () => {
+  if ((window as any).Telegram?.WebApp?.initDataUnsafe?.user) {
+    return (window as any).Telegram.WebApp.initDataUnsafe.user;
+  }
+  return null;
+};
+
+/**
+ * Инициализация Telegram WebApp
+ */
+export const initTelegramWebApp = () => {
+  if ((window as any).Telegram?.WebApp) {
+    const tg = (window as any).Telegram.WebApp;
+    
+    // Расширяем WebApp на весь экран
+    tg.expand();
+    
+    // Включаем подтверждение закрытия
+    tg.enableClosingConfirmation();
+    
+    // Устанавливаем цвета темы
+    tg.setHeaderColor('#05010a');
+    tg.setBackgroundColor('#05010a');
+    
+    // Показываем главную кнопку если нужно
+    tg.MainButton.hide();
+    
+    console.log('Telegram WebApp инициализирован');
+    console.log('Пользователь:', getTelegramUser());
+    
+    return tg;
+  }
+  
+  console.warn('Telegram WebApp API недоступен');
+  return null;
 };

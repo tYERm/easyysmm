@@ -1,13 +1,7 @@
 import { Order, TelegramUser, UserStats, SmmService, WalletInfo } from "../types";
 import { SERVICES, ADMIN_ID } from "./data";
 
-// Ключи для localStorage
-const STORAGE_KEY_ORDERS = 'easysmm_orders_v2';
-const STORAGE_KEY_WALLET = 'easysmm_wallet_v2';
-const STORAGE_KEY_VISITED = 'easysmm_visited';
-const STORAGE_KEY_BANNED = 'easysmm_banned_users';
-
-// Начальная статистика
+// Initial Empty Stats
 const INITIAL_STATS: UserStats = {
   totalSpentTon: 0,
   totalOrders: 0,
@@ -20,53 +14,65 @@ const INITIAL_STATS: UserStats = {
 };
 
 /**
- * Проверяет, заходил ли пользователь ранее.
- * Если нет - возвращает true и помечает как посетившего.
+ * Sync user with DB on startup
  */
-export const checkIsNewUser = (): boolean => {
-    const hasVisited = localStorage.getItem(STORAGE_KEY_VISITED);
-    if (!hasVisited) {
-        localStorage.setItem(STORAGE_KEY_VISITED, 'true');
-        return true;
-    }
-    return false;
-};
-
-/**
- * Работа с бан-листом (эмуляция для админа)
- */
-export const getBannedUsers = (): number[] => {
-    const list = localStorage.getItem(STORAGE_KEY_BANNED);
-    return list ? JSON.parse(list) : [];
-};
-
-export const banUser = (userId: number) => {
-    const list = getBannedUsers();
-    if (!list.includes(userId)) {
-        list.push(userId);
-        localStorage.setItem(STORAGE_KEY_BANNED, JSON.stringify(list));
+export const syncUserWithDb = async (user: TelegramUser): Promise<{ isBanned: boolean, isNew: boolean }> => {
+    try {
+        const res = await fetch('/api/users', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(user)
+        });
+        if (!res.ok) throw new Error('Sync failed');
+        return await res.json();
+    } catch (e) {
+        console.error("User sync error:", e);
+        return { isBanned: false, isNew: false };
     }
 };
 
-export const unbanUser = (userId: number) => {
-    const list = getBannedUsers();
-    const newList = list.filter(id => id !== userId);
-    localStorage.setItem(STORAGE_KEY_BANNED, JSON.stringify(newList));
+/**
+ * Get Banned Users (For Admin Panel)
+ */
+export const getBannedUsers = async (): Promise<number[]> => {
+    try {
+        const res = await fetch('/api/users?id=all'); // Simplified: In real app, separate endpoint for list
+        if (!res.ok) return [];
+        const users: any[] = await res.json();
+        return users.filter(u => u.is_banned).map(u => Number(u.id));
+    } catch (e) {
+        return [];
+    }
 };
 
-export const isUserBanned = (userId: number): boolean => {
-    // В реальном приложении этот запрос шел бы на сервер.
-    // Здесь мы проверяем localStorage. 
-    // Для демо: если Админ забанил кого-то в своем интерфейсе, это сохранится в EGO localStorage.
-    // Чтобы проверить "себя", нам нужен бэкенд. 
-    // Но мы сделаем проверку локально для демонстрации функционала "Бан" на самом себе, если нужно.
-    const list = getBannedUsers();
-    return list.includes(userId);
+export const banUser = async (userId: number) => {
+    await fetch('/api/admin', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ userId, action: 'ban' })
+    });
 };
 
+export const unbanUser = async (userId: number) => {
+    await fetch('/api/admin', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ userId, action: 'unban' })
+    });
+};
+
+export const isUserBanned = async (userId: number): Promise<boolean> => {
+    try {
+        const res = await fetch(`/api/users?id=${userId}`);
+        const user = await res.json();
+        return user.is_banned || false;
+    } catch {
+        return false;
+    }
+};
 
 /**
- * Получение данных пользователя
+ * Get User Data (From Client Telegram WebApp)
  */
 export const getUserData = (): TelegramUser | null => {
   if ((window as any).Telegram?.WebApp?.initDataUnsafe?.user) {
@@ -86,57 +92,74 @@ export const getUserData = (): TelegramUser | null => {
   return null;
 };
 
-/**
- * Получает ВСЕ заказы (для админа) или фильтрует по пользователю
- */
-export const getOrders = (userId: number | undefined, isAdmin: boolean = false): Order[] => {
-  const saved = localStorage.getItem(STORAGE_KEY_ORDERS);
-  const allOrders: Order[] = saved ? JSON.parse(saved) : [];
+// Placeholder for legacy calls, handled by syncUserWithDb now
+export const checkIsNewUser = () => false;
 
-  if (isAdmin) {
-    return allOrders;
+/**
+ * Get Orders (Fetch from API)
+ */
+export const getOrders = async (userId: number | undefined, isAdmin: boolean = false): Promise<Order[]> => {
+  try {
+      const params = new URLSearchParams();
+      if (userId) params.append('userId', userId.toString());
+      if (isAdmin) params.append('isAdmin', 'true');
+
+      const res = await fetch(`/api/orders?${params.toString()}`);
+      if (!res.ok) return [];
+      
+      const orders = await res.json();
+      
+      // Ensure types match frontend expectations (strings to numbers where needed)
+      return orders.map((o: any) => ({
+          ...o,
+          amountTon: Number(o.amountTon),
+          amountRub: Number(o.amountRub),
+          quantity: Number(o.quantity),
+          userId: Number(o.userId),
+          memo: Number(o.memo)
+      }));
+  } catch (e) {
+      console.error("Get orders error:", e);
+      return [];
   }
-
-  if (!userId) return [];
-
-  return allOrders.filter((o: any) => o.userId === userId);
 };
 
 /**
- * Сохраняет новый заказ
+ * Save Order (Post to API)
  */
-export const saveOrder = (order: Order, userId: number): Order[] => {
-  const saved = localStorage.getItem(STORAGE_KEY_ORDERS);
-  const allOrders: Order[] = saved ? JSON.parse(saved) : [];
-  
-  const orderWithUser = { ...order, userId };
-  
-  const newOrders = [orderWithUser, ...allOrders];
-  localStorage.setItem(STORAGE_KEY_ORDERS, JSON.stringify(newOrders));
-  
-  return newOrders.filter((o: any) => o.userId === userId);
+export const saveOrder = async (order: Order, userId: number): Promise<Order[]> => {
+  try {
+      await fetch('/api/orders', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ ...order, userId })
+      });
+      // Fetch fresh list
+      return await getOrders(userId, false);
+  } catch (e) {
+      console.error("Save order error:", e);
+      return []; // Should probably handle error in UI
+  }
 };
 
 /**
- * Обновление статуса заказа (Для Админа)
+ * Update Order Status (For Admin)
  */
-export const updateOrderStatus = (orderId: string, newStatus: 'completed' | 'cancelled'): Order[] => {
-    const saved = localStorage.getItem(STORAGE_KEY_ORDERS);
-    let allOrders: Order[] = saved ? JSON.parse(saved) : [];
-
-    allOrders = allOrders.map(order => {
-        if (order.id === orderId) {
-            return { ...order, status: newStatus };
-        }
-        return order;
-    });
-
-    localStorage.setItem(STORAGE_KEY_ORDERS, JSON.stringify(allOrders));
-    return allOrders;
+export const updateOrderStatus = async (orderId: string, newStatus: 'completed' | 'cancelled'): Promise<Order[]> => {
+    try {
+        await fetch('/api/orders', {
+            method: 'PATCH',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ orderId, status: newStatus })
+        });
+        return await getOrders(undefined, true);
+    } catch (e) {
+        return [];
+    }
 }
 
 /**
- * Рассчитывает статистику пользователя
+ * Calculate Stats (Client side aggregation from fetched orders)
  */
 export const calculateStats = (orders: Order[]): UserStats => {
   const stats = { ...INITIAL_STATS.stats };
@@ -177,12 +200,23 @@ export const calculateStats = (orders: Order[]): UserStats => {
 
 // --- WALLET ---
 
-export const saveWalletData = (wallet: WalletInfo) => {
-  localStorage.setItem(STORAGE_KEY_WALLET, JSON.stringify(wallet));
+export const saveWalletData = async (wallet: WalletInfo) => {
+  const user = getUserData();
+  if (user) {
+      await fetch('/api/wallet', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+              userId: user.id,
+              address: wallet.address,
+              appName: wallet.appName
+          })
+      });
+  }
 };
 
 export const disconnectWalletData = () => {
-  localStorage.removeItem(STORAGE_KEY_WALLET);
+  // No explicit disconnect needed on backend, just local state clear
 };
 
 export const fetchWalletBalance = async (address: string): Promise<number> => {

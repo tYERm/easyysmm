@@ -6,18 +6,17 @@ import {
 } from './components/Icons';
 import { SERVICES, TON_WALLET, calculatePrice, formatTon, formatRub, ADMIN_ID } from './services/data';
 import { verifyPayment } from './services/tonService';
-import { generateBio } from './services/geminiService';
 import { notifyAdminNewOrder, notifyAdminNewUser } from './services/telegramNotifier';
 import { 
     getUserData, getOrders, saveOrder, calculateStats, saveWalletData, 
     disconnectWalletData, fetchWalletBalance, updateOrderStatus, 
-    checkIsNewUser, getBannedUsers, banUser, unbanUser, isUserBanned 
+    checkIsNewUser, getBannedUsers, banUser, unbanUser, isUserBanned, syncUserWithDb
 } from './services/userService';
 import { SmmService, Order, TelegramUser, UserStats, WalletInfo } from './types';
 import { useTonConnectUI, useTonWallet } from '@tonconnect/ui-react';
 
 // --- Types ---
-type ViewState = 'home' | 'order' | 'payment' | 'history' | 'success' | 'profile' | 'admin' | 'banned' | 'tools';
+type ViewState = 'home' | 'order' | 'payment' | 'history' | 'success' | 'profile' | 'admin' | 'banned';
 
 // --- Utils ---
 const getIcon = (iconName: string, className: string) => {
@@ -192,11 +191,6 @@ const App: React.FC = () => {
     const [isVerifying, setIsVerifying] = useState(false);
     const [verifyError, setVerifyError] = useState<string | null>(null);
 
-    // AI Bio Generator State
-    const [bioKeywords, setBioKeywords] = useState('');
-    const [generatedBio, setGeneratedBio] = useState('');
-    const [isGeneratingBio, setIsGeneratingBio] = useState(false);
-
     const isAdmin = user?.id === ADMIN_ID;
 
     // Initial load
@@ -211,28 +205,36 @@ const App: React.FC = () => {
             tg.setBackgroundColor('#05010a');
         }
 
-        // Load User Data
-        const currentUser = getUserData();
-        setUser(currentUser);
+        const init = async () => {
+            // Load User Data from Telegram Context
+            const currentUser = getUserData();
+            setUser(currentUser);
 
-        if (currentUser) {
-            // Check if banned
-            if (isUserBanned(currentUser.id)) {
-                setView('banned');
-                return;
+            if (currentUser) {
+                // Sync with DB (Async)
+                try {
+                    const { isBanned, isNew } = await syncUserWithDb(currentUser);
+                    
+                    if (isBanned) {
+                        setView('banned');
+                        return;
+                    }
+
+                    if (isNew) {
+                        notifyAdminNewUser(currentUser);
+                    }
+
+                    // Fetch Orders (Async)
+                    const myOrders = await getOrders(currentUser.id, false);
+                    setOrders(myOrders);
+                    setStats(calculateStats(myOrders));
+                } catch (e) {
+                    console.error("Initialization failed:", e);
+                }
             }
+        };
 
-            // Check if New User -> Notify Admin
-            const isNew = checkIsNewUser();
-            if (isNew) {
-                notifyAdminNewUser(currentUser);
-            }
-
-            const myOrders = getOrders(currentUser.id, false);
-            setOrders(myOrders);
-            setStats(calculateStats(myOrders));
-        }
-
+        init();
     }, []);
 
     // Watch for TonConnect wallet changes
@@ -248,7 +250,7 @@ const App: React.FC = () => {
                     isConnected: true
                 };
                 setWalletInfo(info);
-                saveWalletData(info);
+                saveWalletData(info); // Sync wallet to DB
             } else {
                 setWalletInfo(null);
                 disconnectWalletData();
@@ -259,11 +261,15 @@ const App: React.FC = () => {
 
     // Admin Data Fetcher
     useEffect(() => {
-        if (isAdmin && view === 'admin') {
-            const allOrders = getOrders(undefined, true);
-            setAdminOrders(allOrders);
-            setBannedUserIds(getBannedUsers());
-        }
+        const fetchAdminData = async () => {
+            if (isAdmin && view === 'admin') {
+                const allOrders = await getOrders(undefined, true);
+                setAdminOrders(allOrders);
+                const banned = await getBannedUsers();
+                setBannedUserIds(banned);
+            }
+        };
+        fetchAdminData();
     }, [view, isAdmin, adminTab]);
 
     const handleServiceSelect = (service: SmmService) => {
@@ -305,7 +311,7 @@ const App: React.FC = () => {
                 createdAt: new Date().toISOString()
             };
 
-            const updatedOrders = saveOrder(newOrder, user.id);
+            const updatedOrders = await saveOrder(newOrder, user.id);
             setOrders(updatedOrders);
             setStats(calculateStats(updatedOrders));
             
@@ -326,12 +332,12 @@ const App: React.FC = () => {
         setIsVerifying(false);
     };
 
-    const handleAdminUpdateStatus = (orderId: string, status: 'completed' | 'cancelled') => {
-        const updated = updateOrderStatus(orderId, status);
+    const handleAdminUpdateStatus = async (orderId: string, status: 'completed' | 'cancelled') => {
+        const updated = await updateOrderStatus(orderId, status);
         setAdminOrders(updated);
         
         if (user) {
-            const myOrders = getOrders(user.id, false);
+            const myOrders = await getOrders(user.id, false);
             setOrders(myOrders);
         }
 
@@ -340,25 +346,14 @@ const App: React.FC = () => {
         }
     };
 
-    const handleBanToggle = (userId: number) => {
+    const handleBanToggle = async (userId: number) => {
         const isBanned = bannedUserIds.includes(userId);
         if (isBanned) {
-            unbanUser(userId);
+            await unbanUser(userId);
             setBannedUserIds(prev => prev.filter(id => id !== userId));
         } else {
-            banUser(userId);
+            await banUser(userId);
             setBannedUserIds(prev => [...prev, userId]);
-        }
-    };
-
-    const handleGenerateBio = async () => {
-        if (!bioKeywords) return;
-        setIsGeneratingBio(true);
-        const bio = await generateBio(bioKeywords);
-        setGeneratedBio(bio);
-        setIsGeneratingBio(false);
-        if ((window as any).Telegram?.WebApp?.HapticFeedback) {
-            (window as any).Telegram.WebApp.HapticFeedback.notificationOccurred('success');
         }
     };
 
@@ -388,13 +383,7 @@ const App: React.FC = () => {
                     <p className="text-xs text-accent-cyan font-medium tracking-wide">SYSTEM ONLINE</p>
                 </div>
             </div>
-            <button 
-                onClick={() => setView('tools')}
-                className="flex items-center gap-2 bg-gradient-to-r from-violet-600 to-fuchsia-600 rounded-full px-3 py-1.5 shadow-lg shadow-violet-500/20 active:scale-95 transition-all"
-            >
-                <SparklesIcon className="w-4 h-4 text-white" />
-                <span className="text-xs font-bold text-white">Free AI Tools</span>
-            </button>
+            {/* Top Profile button removed */}
         </div>
     );
 
@@ -415,64 +404,9 @@ const App: React.FC = () => {
         </div>
     );
 
-    const renderTools = () => (
-         <div className="flex flex-col h-full animate-slide-up p-5 pb-24">
-             <div className="flex items-center gap-4 mb-6">
-                <button onClick={() => setView('home')} className="p-2 -ml-2 rounded-full hover:bg-white/10">
-                    <ChevronLeftIcon className="w-6 h-6 text-white" />
-                </button>
-                <h2 className="font-bold text-lg text-white">AI Tools</h2>
-            </div>
-            
-            <div className="glass-panel p-5 rounded-2xl border border-white/10">
-                <div className="flex items-center gap-3 mb-4">
-                    <div className="w-10 h-10 rounded-lg bg-gradient-to-br from-indigo-500 to-purple-500 flex items-center justify-center">
-                        <SparklesIcon className="w-6 h-6 text-white" />
-                    </div>
-                    <div>
-                        <h3 className="font-bold text-white">AI Bio Generator</h3>
-                        <p className="text-xs text-gray-400">Генератор описания профиля</p>
-                    </div>
-                </div>
-                
-                <div className="space-y-4">
-                    <div className="space-y-2">
-                        <label className="text-xs text-gray-400">Ключевые слова (через запятую)</label>
-                        <input 
-                            type="text" 
-                            value={bioKeywords}
-                            onChange={(e) => setBioKeywords(e.target.value)}
-                            placeholder="блогер, путешествия, лайфстайл..."
-                            className="w-full bg-black/20 border border-white/10 rounded-xl p-3 text-sm text-white focus:outline-none focus:border-violet-500"
-                        />
-                    </div>
-                    <button 
-                        onClick={handleGenerateBio}
-                        disabled={isGeneratingBio || !bioKeywords}
-                        className="w-full py-3 bg-white text-black font-bold rounded-xl disabled:opacity-50"
-                    >
-                        {isGeneratingBio ? 'Генерирую...' : 'Создать Bio'}
-                    </button>
-                    
-                    {generatedBio && (
-                        <div className="mt-4 p-4 bg-white/5 rounded-xl border border-white/10 animate-pop">
-                            <p className="text-sm text-white font-mono mb-2">{generatedBio}</p>
-                            <button 
-                                onClick={() => copyToClipboard(generatedBio)}
-                                className="flex items-center gap-2 text-xs text-accent-cyan font-bold"
-                            >
-                                <CopyIcon className="w-3 h-3" />
-                                Копировать
-                            </button>
-                        </div>
-                    )}
-                </div>
-            </div>
-         </div>
-    );
-
     const renderAdminPanel = () => {
-        // Collect unique users from orders (mock simulation for frontend demo)
+        // Collect unique users from orders + admin banned users logic could be expanded here
+        // For now using user_id from orders
         const uniqueUsers = Array.from(new Set(adminOrders.map(o => o.userId)))
             .filter((id): id is number => typeof id === 'number')
             .map(id => {
@@ -514,7 +448,7 @@ const App: React.FC = () => {
                             <div className="text-center mt-10">
                                 <p className="text-gray-500">Нет активных заказов</p>
                                 <p className="text-[10px] text-gray-600 mt-2 max-w-[200px] mx-auto">
-                                    Примечание: В демо-режиме видны только локальные заказы.
+                                    Примечание: Показаны заказы из БД.
                                 </p>
                             </div>
                         ) : (
@@ -545,7 +479,7 @@ const App: React.FC = () => {
                                 );
                             })}
                              <p className="text-[10px] text-gray-500 text-center mt-4 px-4">
-                                * Список пользователей формируется из локальной истории браузера. В продакшене здесь будет список всех пользователей из БД.
+                                * Список пользователей из заказов.
                             </p>
                         </div>
                     )}
@@ -820,9 +754,17 @@ const App: React.FC = () => {
                         )}
                     </div>
 
-                    <div className="grid grid-cols-2 gap-3">
+                    <div className="grid grid-cols-2 gap-3 mb-3">
                         <StatCard label="Всего потрачено" value={`${formatTon(stats.totalSpentTon)} TON`} icon={<WalletIcon className="w-5 h-5 text-white" />} colorClass="bg-violet-500" />
                         <StatCard label="Всего заказов" value={stats.totalOrders} icon={<HistoryIcon className="w-5 h-5 text-white" />} colorClass="bg-blue-500" />
+                    </div>
+
+                    <h3 className="text-xs uppercase font-bold text-violet-500 ml-1 tracking-wider mb-2">Статистика активности</h3>
+                    <div className="grid grid-cols-2 gap-3">
+                         <StatCard label="Подписчики" value={stats.stats.subscribers.toLocaleString()} icon={<UsersIcon className="w-5 h-5 text-white" />} colorClass="bg-fuchsia-500" />
+                         <StatCard label="Просмотры" value={stats.stats.views.toLocaleString()} icon={<EyeIcon className="w-5 h-5 text-white" />} colorClass="bg-emerald-500" />
+                         <StatCard label="Реакции" value={stats.stats.reactions.toLocaleString()} icon={<ThumbsUpIcon className="w-5 h-5 text-white" />} colorClass="bg-amber-500" />
+                         <StatCard label="Боты" value={stats.stats.botUsers.toLocaleString()} icon={<BotIcon className="w-5 h-5 text-white" />} colorClass="bg-indigo-500" />
                     </div>
                 </div>
             </div>
@@ -851,7 +793,6 @@ const App: React.FC = () => {
             {view === 'history' && renderHistory()}
             {view === 'profile' && renderProfile()}
             {view === 'admin' && renderAdminPanel()}
-            {view === 'tools' && renderTools()}
 
             {/* Bottom Navigation */}
             {['home', 'history', 'profile', 'admin'].includes(view) && (

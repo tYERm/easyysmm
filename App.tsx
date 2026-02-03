@@ -6,13 +6,17 @@ import {
 } from './components/Icons';
 import { SERVICES, TON_WALLET, calculatePrice, formatTon, formatRub, ADMIN_ID } from './services/data';
 import { verifyPayment } from './services/tonService';
-import { notifyAdminNewOrder } from './services/telegramNotifier';
-import { getUserData, getOrders, saveOrder, calculateStats, saveWalletData, disconnectWalletData, fetchWalletBalance, updateOrderStatus } from './services/userService';
+import { notifyAdminNewOrder, notifyAdminNewUser } from './services/telegramNotifier';
+import { 
+    getUserData, getOrders, saveOrder, calculateStats, saveWalletData, 
+    disconnectWalletData, fetchWalletBalance, updateOrderStatus, 
+    checkIsNewUser, getBannedUsers, banUser, unbanUser, isUserBanned 
+} from './services/userService';
 import { SmmService, Order, TelegramUser, UserStats, WalletInfo } from './types';
 import { useTonConnectUI, useTonWallet } from '@tonconnect/ui-react';
 
 // --- Types ---
-type ViewState = 'home' | 'order' | 'payment' | 'history' | 'success' | 'profile' | 'admin';
+type ViewState = 'home' | 'order' | 'payment' | 'history' | 'success' | 'profile' | 'admin' | 'banned';
 
 // --- Utils ---
 const getIcon = (iconName: string, className: string) => {
@@ -46,14 +50,14 @@ const ServiceCard: FC<{ service: SmmService; onClick: () => void }> = ({ service
         className="w-full text-left glass-card rounded-2xl p-4 flex items-center gap-4 group relative overflow-hidden hover:bg-white/5 transition-all active:scale-[0.98]"
     >
         <div className="absolute inset-0 bg-gradient-to-r from-transparent via-white/5 to-transparent translate-x-[-200%] group-hover:animate-shimmer" />
-        <div className="w-12 h-12 rounded-xl bg-violet-950/50 flex items-center justify-center text-violet-300 border border-white/10 shadow-lg group-hover:border-accent-pink/50 group-hover:text-accent-pink transition-colors">
+        <div className="w-12 h-12 rounded-xl bg-violet-950/50 flex items-center justify-center text-violet-300 border border-white/10 shadow-lg group-hover:border-accent-pink/50 group-hover:text-accent-pink transition-colors shrink-0">
             {getIcon(service.icon, "w-6 h-6")}
         </div>
         <div className="flex-1 min-w-0">
             <h3 className="font-bold text-white text-base truncate tracking-tight">{service.name}</h3>
             <p className="text-xs text-violet-300/80 truncate mt-0.5">{service.description}</p>
         </div>
-        <div className="flex flex-col items-end">
+        <div className="flex flex-col items-end shrink-0">
              <div className="px-2 py-1 rounded-md bg-accent-cyan/10 border border-accent-cyan/20">
                 <span className="text-sm font-bold text-accent-cyan">{service.price_per_k} ₽</span>
              </div>
@@ -104,6 +108,7 @@ const AdminOrderItem: FC<{ order: Order; onUpdate: (id: string, status: 'complet
                 <div>
                     <div className="text-xs text-gray-400 font-mono">ID: {order.memo}</div>
                     <div className="font-bold text-white text-sm mt-1">{order.serviceName}</div>
+                    <div className="text-[10px] text-gray-500">User ID: {order.userId || 'Unknown'}</div>
                 </div>
                 <div className="text-right">
                     <div className="text-accent-cyan font-bold">{order.amountTon.toFixed(2)} TON</div>
@@ -168,11 +173,13 @@ const App: React.FC = () => {
     // State
     const [view, setView] = useState<ViewState>('home');
     const [selectedService, setSelectedService] = useState<SmmService | null>(null);
+    const [adminTab, setAdminTab] = useState<'orders' | 'users'>('orders');
     
     // User & Data State
     const [user, setUser] = useState<TelegramUser | null>(null);
     const [orders, setOrders] = useState<Order[]>([]);
-    const [adminOrders, setAdminOrders] = useState<Order[]>([]); // For admin panel
+    const [adminOrders, setAdminOrders] = useState<Order[]>([]);
+    const [bannedUserIds, setBannedUserIds] = useState<number[]>([]);
     const [stats, setStats] = useState<UserStats | null>(null);
     const [walletInfo, setWalletInfo] = useState<WalletInfo | null>(null);
     
@@ -204,6 +211,18 @@ const App: React.FC = () => {
         setUser(currentUser);
 
         if (currentUser) {
+            // Check if banned
+            if (isUserBanned(currentUser.id)) {
+                setView('banned');
+                return;
+            }
+
+            // Check if New User -> Notify Admin
+            const isNew = checkIsNewUser();
+            if (isNew) {
+                notifyAdminNewUser(currentUser);
+            }
+
             const myOrders = getOrders(currentUser.id, false);
             setOrders(myOrders);
             setStats(calculateStats(myOrders));
@@ -236,10 +255,11 @@ const App: React.FC = () => {
     // Admin Data Fetcher
     useEffect(() => {
         if (isAdmin && view === 'admin') {
-            const all = getOrders(undefined, true);
-            setAdminOrders(all);
+            const allOrders = getOrders(undefined, true);
+            setAdminOrders(allOrders);
+            setBannedUserIds(getBannedUsers());
         }
-    }, [view, isAdmin]);
+    }, [view, isAdmin, adminTab]);
 
     const handleServiceSelect = (service: SmmService) => {
         setSelectedService(service);
@@ -280,12 +300,10 @@ const App: React.FC = () => {
                 createdAt: new Date().toISOString()
             };
 
-            // 1. Save locally
             const updatedOrders = saveOrder(newOrder, user.id);
             setOrders(updatedOrders);
             setStats(calculateStats(updatedOrders));
             
-            // 2. Notify Admin via Telegram Bot API
             await notifyAdminNewOrder(newOrder, user);
             
             setView('success');
@@ -307,7 +325,6 @@ const App: React.FC = () => {
         const updated = updateOrderStatus(orderId, status);
         setAdminOrders(updated);
         
-        // Also update local user view if it's their own order
         if (user) {
             const myOrders = getOrders(user.id, false);
             setOrders(myOrders);
@@ -315,6 +332,17 @@ const App: React.FC = () => {
 
         if ((window as any).Telegram?.WebApp?.HapticFeedback) {
             (window as any).Telegram.WebApp.HapticFeedback.impactOccurred('medium');
+        }
+    };
+
+    const handleBanToggle = (userId: number) => {
+        const isBanned = bannedUserIds.includes(userId);
+        if (isBanned) {
+            unbanUser(userId);
+            setBannedUserIds(prev => prev.filter(id => id !== userId));
+        } else {
+            banUser(userId);
+            setBannedUserIds(prev => [...prev, userId]);
         }
     };
 
@@ -326,9 +354,11 @@ const App: React.FC = () => {
         return calculatePrice(quantity, selectedService.price_per_k);
     }, [selectedService, quantity]);
 
+    // Use Universal Link instead of ton:// protocol
     const tonDeepLink = useMemo(() => {
         const nanoTons = Math.floor(priceData.ton * 1000000000);
-        return `ton://transfer/${TON_WALLET}?amount=${nanoTons}&text=${memo}`;
+        // Universal link format is more reliable in Telegram WebApp
+        return `https://app.tonkeeper.com/transfer/${TON_WALLET}?amount=${nanoTons}&text=${memo}`;
     }, [priceData.ton, memo]);
 
     // --- Views Render Functions ---
@@ -342,22 +372,7 @@ const App: React.FC = () => {
                     <p className="text-xs text-accent-cyan font-medium tracking-wide">SYSTEM ONLINE</p>
                 </div>
             </div>
-            
-            <button 
-                onClick={() => setView('profile')}
-                className="flex items-center gap-2 bg-white/5 border border-white/10 rounded-full pl-3 pr-1 py-1 backdrop-blur-md hover:bg-white/10 transition-all active:scale-95 group"
-            >
-                <span className="text-xs font-bold text-violet-200">Профиль</span>
-                <div className="w-8 h-8 rounded-full overflow-hidden border border-white/20 bg-violet-900 flex items-center justify-center">
-                    {user?.photo_url ? (
-                        <img src={user.photo_url} alt="User" className="w-full h-full object-cover" />
-                    ) : (
-                        <span className="text-xs font-bold text-violet-300">
-                            {user?.first_name?.charAt(0) || 'U'}
-                        </span>
-                    )}
-                </div>
-            </button>
+            {/* Top Profile button removed as requested */}
         </div>
     );
 
@@ -378,24 +393,86 @@ const App: React.FC = () => {
         </div>
     );
 
-    const renderAdminPanel = () => (
-        <div className="p-5 pb-24 h-full flex flex-col">
-            <h2 className="text-xl font-bold text-white mb-4 animate-slide-up flex items-center gap-2">
-                <ShieldIcon className="w-6 h-6 text-accent-cyan" />
-                Админ Панель
-            </h2>
-            
-            <div className="space-y-3 pb-4">
-                {adminOrders.length === 0 ? (
-                    <p className="text-center text-gray-500 mt-10">Нет активных заказов</p>
-                ) : (
-                    adminOrders.map((order) => (
-                        <AdminOrderItem key={order.id} order={order} onUpdate={handleAdminUpdateStatus} />
-                    ))
-                )}
+    const renderAdminPanel = () => {
+        // Collect unique users from orders to display in "Users" tab (mock simulation since we lack backend)
+        const uniqueUsers = Array.from(new Set(adminOrders.map(o => o.userId)))
+            .filter((id): id is number => typeof id === 'number')
+            .map(id => {
+                // Find last order for this user to get info? 
+                // We don't save user names in orders unfortunately in this simple version, 
+                // but we can list IDs. In a real app, users table would exist.
+                return { id };
+            });
+
+        // Add current user to the list for demo purposes if not there
+        if (user && !uniqueUsers.find(u => u.id === user.id)) {
+            uniqueUsers.push({ id: user.id });
+        }
+
+        return (
+            <div className="p-5 pb-24 h-full flex flex-col">
+                <div className="flex justify-between items-center mb-4 animate-slide-up">
+                    <h2 className="text-xl font-bold text-white flex items-center gap-2">
+                        <ShieldIcon className="w-6 h-6 text-accent-cyan" />
+                        Админ Панель
+                    </h2>
+                </div>
+
+                <div className="flex p-1 bg-white/5 rounded-xl mb-4">
+                    <button 
+                        onClick={() => setAdminTab('orders')}
+                        className={`flex-1 py-2 text-xs font-bold rounded-lg transition-all ${adminTab === 'orders' ? 'bg-violet-600 text-white shadow-lg' : 'text-gray-400'}`}
+                    >
+                        Заказы
+                    </button>
+                    <button 
+                        onClick={() => setAdminTab('users')}
+                        className={`flex-1 py-2 text-xs font-bold rounded-lg transition-all ${adminTab === 'users' ? 'bg-violet-600 text-white shadow-lg' : 'text-gray-400'}`}
+                    >
+                        Пользователи
+                    </button>
+                </div>
+                
+                <div className="space-y-3 pb-4 overflow-y-auto">
+                    {adminTab === 'orders' ? (
+                        adminOrders.length === 0 ? (
+                            <p className="text-center text-gray-500 mt-10">Нет активных заказов</p>
+                        ) : (
+                            adminOrders.map((order) => (
+                                <AdminOrderItem key={order.id} order={order} onUpdate={handleAdminUpdateStatus} />
+                            ))
+                        )
+                    ) : (
+                        // Users Tab
+                        <div className="space-y-2">
+                            {uniqueUsers.map(u => {
+                                const isBanned = bannedUserIds.includes(u.id);
+                                return (
+                                    <div key={u.id} className="glass-card p-4 rounded-xl flex justify-between items-center">
+                                        <div>
+                                            <div className="font-bold text-white text-sm">ID: {u.id}</div>
+                                            <div className="text-xs text-gray-500">
+                                                {u.id === user?.id ? '(Вы)' : 'Пользователь'}
+                                            </div>
+                                        </div>
+                                        <button 
+                                            onClick={() => handleBanToggle(u.id)}
+                                            className={`px-3 py-1.5 rounded-lg text-xs font-bold transition-colors ${isBanned ? 'bg-green-500/20 text-green-400' : 'bg-red-500/20 text-red-400'}`}
+                                        >
+                                            {isBanned ? 'Разбанить' : 'Забанить'}
+                                        </button>
+                                    </div>
+                                );
+                            })}
+                            <p className="text-xs text-gray-500 text-center mt-4">
+                                * Список формируется из локальной истории заказов
+                            </p>
+                        </div>
+                    )}
+                </div>
             </div>
-        </div>
-    );
+        );
+    };
 
     const renderHistory = () => (
         <div className="p-5 pb-24 h-full flex flex-col">
@@ -431,7 +508,7 @@ const App: React.FC = () => {
 
                 <div className="p-5 space-y-6 flex-1 overflow-y-auto pb-24">
                     <div className="glass-card p-4 rounded-xl flex items-start gap-4">
-                         <div className="w-12 h-12 rounded-xl bg-violet-950/50 flex items-center justify-center text-violet-300 border border-white/10 shadow-lg">
+                         <div className="w-12 h-12 rounded-xl bg-violet-950/50 flex items-center justify-center text-violet-300 border border-white/10 shadow-lg shrink-0">
                             {getIcon(selectedService.icon, "w-6 h-6")}
                         </div>
                         <div>
@@ -551,6 +628,8 @@ const App: React.FC = () => {
 
                     <a 
                         href={tonDeepLink}
+                        target="_blank"
+                        rel="noopener noreferrer"
                         className="block w-full bg-[#0098EA] hover:bg-[#0098EA]/90 text-white font-bold py-4 rounded-xl shadow-lg active:scale-[0.98] transition-all"
                     >
                         Оплатить через Tonkeeper
@@ -606,15 +685,15 @@ const App: React.FC = () => {
         return (
             <div className="flex flex-col h-full animate-slide-up">
                  <div className="p-4 flex items-center gap-4 sticky top-0 z-10 bg-[#05010a]/80 backdrop-blur-xl border-b border-white/5">
-                    <button onClick={() => setView('home')} className="p-2 rounded-full hover:bg-white/10 transition-colors">
+                    <button onClick={() => setView('home')} className="p-2 -ml-2 rounded-full hover:bg-white/10 transition-colors">
                         <ChevronLeftIcon className="w-6 h-6 text-white" />
                     </button>
                     <h2 className="font-bold text-lg text-white">Мой Профиль</h2>
                 </div>
                 <div className="p-5 space-y-6 overflow-y-auto pb-24">
-                    <div className="flex flex-col items-center justify-center py-6 glass-panel rounded-2xl relative overflow-hidden">
-                        <div className="absolute inset-0 bg-gradient-to-b from-violet-600/10 to-transparent"></div>
-                        <div className="w-24 h-24 rounded-full border-4 border-white/5 bg-violet-900 overflow-hidden shadow-2xl mb-4 relative z-10">
+                    <div className="flex flex-col items-center justify-center py-8 glass-panel rounded-3xl relative overflow-hidden border-t border-white/10">
+                        <div className="absolute inset-0 bg-gradient-to-b from-violet-600/20 to-transparent"></div>
+                        <div className="w-24 h-24 rounded-full border-4 border-white/5 bg-violet-900 overflow-hidden shadow-2xl mb-4 relative z-10 ring-2 ring-violet-500/30">
                             {user?.photo_url ? (
                                 <img src={user.photo_url} alt="User" className="w-full h-full object-cover" />
                             ) : (
@@ -624,11 +703,19 @@ const App: React.FC = () => {
                             )}
                         </div>
                         <h2 className="text-2xl font-bold text-white relative z-10">{user?.first_name} {user?.last_name}</h2>
-                        <p className="text-violet-400 text-sm font-mono mt-1 relative z-10">ID: {user?.id}</p>
+                        {user?.username && <p className="text-violet-400 text-sm font-medium relative z-10">@{user.username}</p>}
+                        <div className="mt-4 flex gap-4 relative z-10">
+                            <div className="px-3 py-1 rounded-full bg-white/5 border border-white/10 text-xs text-gray-400">
+                                ID: {user?.id}
+                            </div>
+                             <div className="px-3 py-1 rounded-full bg-white/5 border border-white/10 text-xs text-gray-400">
+                                {user?.language_code?.toUpperCase() || 'EN'}
+                            </div>
+                        </div>
                     </div>
 
                      <div className="space-y-3">
-                        <h3 className="text-xs uppercase font-bold text-violet-500 ml-1">Способ оплаты</h3>
+                        <h3 className="text-xs uppercase font-bold text-violet-500 ml-1 tracking-wider">Финансы</h3>
                         {!walletInfo?.isConnected ? (
                             <button onClick={handleConnectWallet} className="w-full py-4 glass-card border border-[#4592ff]/30 rounded-2xl flex items-center justify-center gap-3 hover:bg-[#4592ff]/10 transition-all group active:scale-[0.98]">
                                 <div className="w-10 h-10 bg-[#4592ff] rounded-xl flex items-center justify-center shadow-lg group-hover:scale-110 transition-transform"><WalletIcon className="w-5 h-5 text-white" /></div>
@@ -636,33 +723,47 @@ const App: React.FC = () => {
                                 <ArrowRightIcon className="w-5 h-5 text-blue-400 ml-auto mr-2" />
                             </button>
                         ) : (
-                            <div className="glass-card p-5 rounded-2xl border border-accent-cyan/30 relative overflow-hidden">
+                            <div className="glass-card p-5 rounded-2xl border border-accent-cyan/30 relative overflow-hidden group">
+                                <div className="absolute top-0 right-0 w-20 h-20 bg-accent-cyan/10 blur-xl rounded-full -mr-10 -mt-10"></div>
                                 <div className="flex justify-between items-start mb-4">
                                     <div>
-                                        <p className="text-gray-400 text-xs">Подключено</p>
-                                        <p className="font-bold text-white">{shortAddress(walletInfo.address)}</p>
+                                        <p className="text-gray-400 text-xs mb-1">Активный кошелек</p>
+                                        <p className="font-mono text-white text-sm bg-black/20 px-2 py-1 rounded-lg inline-block">{shortAddress(walletInfo.address)}</p>
                                     </div>
-                                    <button onClick={handleDisconnectWallet} className="p-2 bg-red-500/10 rounded-lg text-red-400 hover:bg-red-500/20"><TrashIcon className="w-4 h-4" /></button>
+                                    <button onClick={handleDisconnectWallet} className="p-2 bg-red-500/10 rounded-lg text-red-400 hover:bg-red-500/20 transition-colors"><TrashIcon className="w-4 h-4" /></button>
                                 </div>
                                 <div className="flex items-end gap-2">
-                                    <span className="text-2xl font-bold text-accent-cyan">{walletInfo.balance.toFixed(2)}</span>
-                                    <span className="text-sm text-accent-cyan mb-1.5">TON</span>
+                                    <span className="text-3xl font-bold text-white">{walletInfo.balance.toFixed(2)}</span>
+                                    <span className="text-sm font-bold text-accent-cyan mb-2">TON</span>
                                 </div>
                             </div>
                         )}
                     </div>
 
                     <div className="grid grid-cols-2 gap-3">
-                        <StatCard label="Потрачено" value={`${formatTon(stats.totalSpentTon)} TON`} icon={<WalletIcon className="w-5 h-5 text-white" />} colorClass="bg-violet-500" />
-                        <StatCard label="Заказов" value={stats.totalOrders} icon={<HistoryIcon className="w-5 h-5 text-white" />} colorClass="bg-blue-500" />
+                        <StatCard label="Всего потрачено" value={`${formatTon(stats.totalSpentTon)} TON`} icon={<WalletIcon className="w-5 h-5 text-white" />} colorClass="bg-violet-500" />
+                        <StatCard label="Всего заказов" value={stats.totalOrders} icon={<HistoryIcon className="w-5 h-5 text-white" />} colorClass="bg-blue-500" />
                     </div>
                 </div>
             </div>
         );
     };
 
+    const renderBanned = () => (
+        <div className="flex flex-col items-center justify-center h-screen p-8 text-center bg-black/90 z-50 fixed inset-0">
+            <div className="w-24 h-24 bg-red-500/20 rounded-full flex items-center justify-center mb-6">
+                <ShieldIcon className="w-12 h-12 text-red-500" />
+            </div>
+            <h2 className="text-2xl font-bold text-white mb-2">Доступ ограничен</h2>
+            <p className="text-gray-400">Ваш аккаунт был заблокирован администратором за нарушение правил сервиса.</p>
+            <div className="mt-8 text-xs text-gray-600">ID: {user?.id}</div>
+        </div>
+    );
+
     return (
-        <div className="min-h-screen text-white font-sans selection:bg-violet-500/30 overflow-hidden">
+        <div className="min-h-screen text-white font-sans selection:bg-violet-500/30 overflow-hidden relative">
+            {view === 'banned' && renderBanned()}
+            
             {view === 'home' && renderHome()}
             {view === 'order' && renderOrderForm()}
             {view === 'payment' && renderPayment()}
@@ -674,39 +775,41 @@ const App: React.FC = () => {
             {/* Bottom Navigation */}
             {['home', 'history', 'profile', 'admin'].includes(view) && (
                 <div className="fixed bottom-0 left-0 right-0 p-4 z-50">
-                    <div className="glass-panel rounded-2xl p-1 flex justify-between items-center shadow-2xl backdrop-blur-xl">
+                    <div className="glass-panel rounded-2xl p-1 flex justify-between items-center shadow-2xl backdrop-blur-xl border border-white/10 bg-[#05010a]/80">
                         <button 
                             onClick={() => setView('home')}
-                            className={`flex-1 py-3 rounded-xl flex flex-col items-center gap-1 transition-all ${view === 'home' ? 'bg-white/10 text-white shadow-inner' : 'text-gray-400 hover:text-white'}`}
+                            className={`flex-1 py-3 rounded-xl flex flex-col items-center gap-1 transition-all active:scale-95 ${view === 'home' ? 'bg-white/10 text-white shadow-inner' : 'text-gray-400 hover:text-white'}`}
                         >
-                            <HomeIcon className={`w-5 h-5 ${view === 'home' ? 'text-accent-cyan' : ''}`} />
+                            <HomeIcon className={`w-5 h-5 transition-colors ${view === 'home' ? 'text-accent-cyan' : ''}`} />
                             <span className="text-[10px] font-medium">Главная</span>
                         </button>
                         <button 
                             onClick={() => setView('history')}
-                            className={`flex-1 py-3 rounded-xl flex flex-col items-center gap-1 transition-all ${view === 'history' ? 'bg-white/10 text-white shadow-inner' : 'text-gray-400 hover:text-white'}`}
+                            className={`flex-1 py-3 rounded-xl flex flex-col items-center gap-1 transition-all active:scale-95 ${view === 'history' ? 'bg-white/10 text-white shadow-inner' : 'text-gray-400 hover:text-white'}`}
                         >
-                            <HistoryIcon className={`w-5 h-5 ${view === 'history' ? 'text-accent-cyan' : ''}`} />
+                            <HistoryIcon className={`w-5 h-5 transition-colors ${view === 'history' ? 'text-accent-cyan' : ''}`} />
                             <span className="text-[10px] font-medium">История</span>
                         </button>
                          {isAdmin && (
                             <button 
                                 onClick={() => setView('admin')}
-                                className={`flex-1 py-3 rounded-xl flex flex-col items-center gap-1 transition-all ${view === 'admin' ? 'bg-white/10 text-white shadow-inner' : 'text-gray-400 hover:text-white'}`}
+                                className={`flex-1 py-3 rounded-xl flex flex-col items-center gap-1 transition-all active:scale-95 ${view === 'admin' ? 'bg-white/10 text-white shadow-inner' : 'text-gray-400 hover:text-white'}`}
                             >
-                                <ShieldIcon className={`w-5 h-5 ${view === 'admin' ? 'text-red-400' : ''}`} />
+                                <ShieldIcon className={`w-5 h-5 transition-colors ${view === 'admin' ? 'text-red-400' : ''}`} />
                                 <span className="text-[10px] font-medium">Админ</span>
                             </button>
                         )}
                         <button 
                             onClick={() => setView('profile')}
-                            className={`flex-1 py-3 rounded-xl flex flex-col items-center gap-1 transition-all ${view === 'profile' ? 'bg-white/10 text-white shadow-inner' : 'text-gray-400 hover:text-white'}`}
+                            className={`flex-1 py-3 rounded-xl flex flex-col items-center gap-1 transition-all active:scale-95 ${view === 'profile' ? 'bg-white/10 text-white shadow-inner' : 'text-gray-400 hover:text-white'}`}
                         >
-                            <div className={`w-5 h-5 rounded-full overflow-hidden border-2 ${view === 'profile' ? 'border-accent-cyan' : 'border-transparent'}`}>
+                            <div className={`w-5 h-5 rounded-full overflow-hidden border-2 transition-colors ${view === 'profile' ? 'border-accent-cyan' : 'border-transparent'}`}>
                                 {user?.photo_url ? (
                                     <img src={user.photo_url} alt="" className="w-full h-full object-cover" />
                                 ) : (
-                                    <div className="w-full h-full bg-violet-800" />
+                                    <div className="w-full h-full bg-violet-800 flex items-center justify-center text-[8px] font-bold">
+                                        {user?.first_name?.charAt(0)}
+                                    </div>
                                 )}
                             </div>
                             <span className="text-[10px] font-medium">Профиль</span>

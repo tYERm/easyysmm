@@ -4,6 +4,8 @@ import { SERVICES, ADMIN_ID } from "./data";
 // Ключи для localStorage
 const STORAGE_KEY_ORDERS = 'easysmm_orders_v2';
 const STORAGE_KEY_WALLET = 'easysmm_wallet_v2';
+const STORAGE_KEY_VISITED = 'easysmm_visited';
+const STORAGE_KEY_BANNED = 'easysmm_banned_users';
 
 // Начальная статистика
 const INITIAL_STATS: UserStats = {
@@ -16,6 +18,52 @@ const INITIAL_STATS: UserStats = {
     botUsers: 0
   }
 };
+
+/**
+ * Проверяет, заходил ли пользователь ранее.
+ * Если нет - возвращает true и помечает как посетившего.
+ */
+export const checkIsNewUser = (): boolean => {
+    const hasVisited = localStorage.getItem(STORAGE_KEY_VISITED);
+    if (!hasVisited) {
+        localStorage.setItem(STORAGE_KEY_VISITED, 'true');
+        return true;
+    }
+    return false;
+};
+
+/**
+ * Работа с бан-листом (эмуляция для админа)
+ */
+export const getBannedUsers = (): number[] => {
+    const list = localStorage.getItem(STORAGE_KEY_BANNED);
+    return list ? JSON.parse(list) : [];
+};
+
+export const banUser = (userId: number) => {
+    const list = getBannedUsers();
+    if (!list.includes(userId)) {
+        list.push(userId);
+        localStorage.setItem(STORAGE_KEY_BANNED, JSON.stringify(list));
+    }
+};
+
+export const unbanUser = (userId: number) => {
+    const list = getBannedUsers();
+    const newList = list.filter(id => id !== userId);
+    localStorage.setItem(STORAGE_KEY_BANNED, JSON.stringify(newList));
+};
+
+export const isUserBanned = (userId: number): boolean => {
+    // В реальном приложении этот запрос шел бы на сервер.
+    // Здесь мы проверяем localStorage. 
+    // Для демо: если Админ забанил кого-то в своем интерфейсе, это сохранится в EGO localStorage.
+    // Чтобы проверить "себя", нам нужен бэкенд. 
+    // Но мы сделаем проверку локально для демонстрации функционала "Бан" на самом себе, если нужно.
+    const list = getBannedUsers();
+    return list.includes(userId);
+};
+
 
 /**
  * Получение данных пользователя
@@ -49,11 +97,6 @@ export const getOrders = (userId: number | undefined, isAdmin: boolean = false):
     return allOrders;
   }
 
-  // Для обычного пользователя фильтруем только его заказы
-  // (В Order интерфейсе нет userId, добавим его неявно через фильтрацию или при сохранении)
-  // Примечание: В текущей реализации Order не хранил userId в явном виде в types.ts, 
-  // но мы будем сохранять его в saveOrder. Для совместимости со старыми записями
-  // показываем все, если userId не передан.
   if (!userId) return [];
 
   return allOrders.filter((o: any) => o.userId === userId);
@@ -66,7 +109,6 @@ export const saveOrder = (order: Order, userId: number): Order[] => {
   const saved = localStorage.getItem(STORAGE_KEY_ORDERS);
   const allOrders: Order[] = saved ? JSON.parse(saved) : [];
   
-  // Добавляем userId к объекту заказа (расширяем объект, даже если в типах нет)
   const orderWithUser = { ...order, userId };
   
   const newOrders = [orderWithUser, ...allOrders];

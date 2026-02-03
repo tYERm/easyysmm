@@ -22,6 +22,7 @@ export interface Order {
   memo: number;
   status: 'pending' | 'active' | 'completed' | 'cancelled';
   createdAt: string;
+  userId?: number;
 }
 
 export interface UserStats {

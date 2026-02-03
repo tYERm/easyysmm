@@ -80,17 +80,16 @@
       }
       
       .glass-panel {
-        background: rgba(255, 255, 255, 0.03);
-        backdrop-filter: blur(20px);
-        -webkit-backdrop-filter: blur(20px);
-        border: 1px solid rgba(255, 255, 255, 0.05);
-        box-shadow: 0 4px 30px rgba(0, 0, 0, 0.1);
+        background: rgba(19, 6, 35, 0.6); /* Более темный фон для производительности */
+        backdrop-filter: blur(12px); /* Уменьшен blur */
+        -webkit-backdrop-filter: blur(12px);
+        border-top: 1px solid rgba(255, 255, 255, 0.1);
       }
 
       .glass-card {
-        background: linear-gradient(145deg, rgba(255, 255, 255, 0.05) 0%, rgba(255, 255, 255, 0.01) 100%);
-        backdrop-filter: blur(10px);
-        border: 1px solid rgba(255, 255, 255, 0.05);
+        background: linear-gradient(145deg, rgba(255, 255, 255, 0.07) 0%, rgba(255, 255, 255, 0.02) 100%);
+        backdrop-filter: blur(0px); /* Убран blur с карточек для скорости */
+        border: 1px solid rgba(255, 255, 255, 0.08);
       }
       
       .no-scrollbar::-webkit-scrollbar {
@@ -101,7 +100,7 @@
         scrollbar-width: none;
       }
 
-      /* Nebula Background */
+      /* Nebula Background - Optimized */
       .nebula-bg {
         position: fixed;
         top: 0;
@@ -111,53 +110,47 @@
         z-index: -1;
         overflow: hidden;
         background: #05010a;
+        /* Использование will-change для GPU ускорения */
+        will-change: transform; 
       }
 
       .nebula-orb {
         position: absolute;
         border-radius: 50%;
-        filter: blur(80px);
-        opacity: 0.4;
+        filter: blur(50px); /* Уменьшен blur с 80px до 50px */
+        opacity: 0.3;
         animation: float 10s ease-in-out infinite;
+        will-change: transform;
       }
 
       .orb-1 {
         top: -10%;
         right: -10%;
-        width: 400px;
-        height: 400px;
+        width: 300px;
+        height: 300px;
         background: #4c1d95;
-        animation-delay: 0s;
+        animation-duration: 12s;
       }
 
       .orb-2 {
         bottom: -20%;
         left: -10%;
-        width: 500px;
-        height: 500px;
+        width: 350px;
+        height: 350px;
         background: #0f4c75;
         animation-delay: -2s;
+        animation-duration: 15s;
       }
 
       .orb-3 {
-        top: 40%;
-        left: 30%;
-        width: 300px;
-        height: 300px;
+        top: 30%;
+        left: 20%;
+        width: 200px;
+        height: 200px;
         background: #be185d;
-        opacity: 0.2;
+        opacity: 0.15;
         animation-delay: -5s;
-      }
-      
-      .scan-line {
-        position: absolute;
-        left: 0;
-        width: 100%;
-        height: 2px;
-        background: #22d3ee;
-        box-shadow: 0 0 10px #22d3ee;
-        animation: scan 2s linear infinite;
-        z-index: 10;
+        animation-duration: 18s;
       }
     </style>
   <script type="importmap">

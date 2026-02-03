@@ -1,17 +1,28 @@
 import { neon } from '@neondatabase/serverless';
 
-export default async function handler(req: Request) {
-  if (!process.env.DATABASE_URL) return new Response('DB config missing', { status: 500 });
+export default async function handler(req: any, res: any) {
+  res.setHeader('Access-Control-Allow-Credentials', true);
+  res.setHeader('Access-Control-Allow-Origin', '*');
+  res.setHeader('Access-Control-Allow-Methods', 'GET,OPTIONS,PATCH,DELETE,POST,PUT');
+  res.setHeader(
+    'Access-Control-Allow-Headers',
+    'X-CSRF-Token, X-Requested-With, Accept, Accept-Version, Content-Length, Content-MD5, Content-Type, Date, X-Api-Version'
+  );
+
+  if (req.method === 'OPTIONS') {
+    res.status(200).end();
+    return;
+  }
+
+  if (!process.env.DATABASE_URL) return res.status(500).send('DB config missing');
   const sql = neon(process.env.DATABASE_URL);
 
   try {
     if (req.method === 'GET') {
-      const url = new URL(req.url);
-      const userId = url.searchParams.get('userId');
-      const isAdmin = url.searchParams.get('isAdmin') === 'true';
+      const { userId, isAdmin } = req.query;
 
       let orders;
-      if (isAdmin) {
+      if (isAdmin === 'true') {
         orders = await sql`
             SELECT 
                 order_id as id,
@@ -46,16 +57,14 @@ export default async function handler(req: Request) {
             WHERE user_id = ${userId} 
             ORDER BY created_at DESC`;
       } else {
-          return new Response('Missing params', { status: 400 });
+          return res.status(400).send('Missing params');
       }
 
-      return new Response(JSON.stringify(orders), {
-        headers: { 'Content-Type': 'application/json' }
-      });
+      return res.status(200).json(orders);
     }
 
     if (req.method === 'POST') {
-      const body = await req.json();
+      const body = req.body || {};
       const { id, userId, serviceId, serviceName, url, quantity, amountTon, amountRub, memo, status } = body;
 
       await sql`
@@ -68,12 +77,7 @@ export default async function handler(req: Request) {
         )
       `;
 
-      // Update User Stats (Simplified incremental update)
       if (status === 'active') {
-         // Determine stat column based on service logic done in frontend, 
-         // but for DB purity we should update user_stats.
-         // For now, we will just rely on frontend recalculating from order history 
-         // or implement a basic counter increment here if needed.
          await sql`
             INSERT INTO user_stats (user_id, total_orders, total_spent_ton)
             VALUES (${userId}, 1, ${amountTon})
@@ -83,26 +87,22 @@ export default async function handler(req: Request) {
          `;
       }
 
-      return new Response(JSON.stringify({ success: true }), {
-        headers: { 'Content-Type': 'application/json' }
-      });
+      return res.status(200).json({ success: true });
     }
 
     if (req.method === 'PATCH') {
-        const body = await req.json();
+        const body = req.body || {};
         const { orderId, status } = body;
         
         await sql`UPDATE orders SET status = ${status} WHERE order_id = ${orderId}`;
         
-        return new Response(JSON.stringify({ success: true }), {
-            headers: { 'Content-Type': 'application/json' }
-        });
+        return res.status(200).json({ success: true });
     }
 
-    return new Response('Method not allowed', { status: 405 });
+    return res.status(405).send('Method not allowed');
 
   } catch (error: any) {
     console.error("Order API Error", error);
-    return new Response(JSON.stringify({ error: error.message }), { status: 500 });
+    return res.status(500).json({ error: error.message });
   }
 }

@@ -1,12 +1,21 @@
 import { neon } from '@neondatabase/serverless';
 
-export default async function handler(req: Request) {
-  if (!process.env.DATABASE_URL) return new Response('DB config missing', { status: 500 });
+export default async function handler(req: any, res: any) {
+  res.setHeader('Access-Control-Allow-Credentials', true);
+  res.setHeader('Access-Control-Allow-Origin', '*');
+  res.setHeader('Access-Control-Allow-Methods', 'GET,OPTIONS,PATCH,DELETE,POST,PUT');
+  
+  if (req.method === 'OPTIONS') {
+    res.status(200).end();
+    return;
+  }
+
+  if (!process.env.DATABASE_URL) return res.status(500).send('DB config missing');
   const sql = neon(process.env.DATABASE_URL);
 
   if (req.method === 'POST') {
     try {
-        const { userId, address, appName } = await req.json();
+        const { userId, address, appName } = req.body || {};
         
         await sql`
             INSERT INTO wallets (user_id, address, wallet_app, is_connected, connected_at)
@@ -18,11 +27,11 @@ export default async function handler(req: Request) {
                 connected_at = NOW()
         `;
         
-        return new Response(JSON.stringify({ success: true }), { headers: { 'Content-Type': 'application/json' } });
+        return res.status(200).json({ success: true });
     } catch (e: any) {
-        return new Response(JSON.stringify({ error: e.message }), { status: 500 });
+        return res.status(500).json({ error: e.message });
     }
   }
   
-  return new Response('Method not allowed', { status: 405 });
+  return res.status(405).send('Method not allowed');
 }

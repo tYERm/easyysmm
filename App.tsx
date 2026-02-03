@@ -10,7 +10,8 @@ import { notifyAdminNewOrder, notifyAdminNewUser } from './services/telegramNoti
 import { 
     getUserData, getOrders, saveOrder, calculateStats, saveWalletData, 
     disconnectWalletData, fetchWalletBalance, updateOrderStatus, 
-    checkIsNewUser, getBannedUsers, banUser, unbanUser, isUserBanned, syncUserWithDb
+    getAllUsers, getBannedUsers, banUser, unbanUser, syncUserWithDb,
+    INITIAL_STATS
 } from './services/userService';
 import { SmmService, Order, TelegramUser, UserStats, WalletInfo } from './types';
 import { useTonConnectUI, useTonWallet } from '@tonconnect/ui-react';
@@ -178,8 +179,12 @@ const App: React.FC = () => {
     const [user, setUser] = useState<TelegramUser | null>(null);
     const [orders, setOrders] = useState<Order[]>([]);
     const [adminOrders, setAdminOrders] = useState<Order[]>([]);
+    const [allUsers, setAllUsers] = useState<any[]>([]);
     const [bannedUserIds, setBannedUserIds] = useState<number[]>([]);
-    const [stats, setStats] = useState<UserStats | null>(null);
+    
+    // Fix: Initialize stats with 0 so profile renders immediately
+    const [stats, setStats] = useState<UserStats>(INITIAL_STATS);
+    
     const [walletInfo, setWalletInfo] = useState<WalletInfo | null>(null);
     
     // Order Form State
@@ -263,10 +268,16 @@ const App: React.FC = () => {
     useEffect(() => {
         const fetchAdminData = async () => {
             if (isAdmin && view === 'admin') {
-                const allOrders = await getOrders(undefined, true);
-                setAdminOrders(allOrders);
-                const banned = await getBannedUsers();
-                setBannedUserIds(banned);
+                if (adminTab === 'orders') {
+                    const allOrders = await getOrders(undefined, true);
+                    setAdminOrders(allOrders);
+                } else if (adminTab === 'users') {
+                    const users = await getAllUsers();
+                    setAllUsers(users);
+                    // Also update banned list from full user list
+                    const banned = users.filter((u: any) => u.is_banned).map((u: any) => Number(u.id));
+                    setBannedUserIds(banned);
+                }
             }
         };
         fetchAdminData();
@@ -348,13 +359,17 @@ const App: React.FC = () => {
 
     const handleBanToggle = async (userId: number) => {
         const isBanned = bannedUserIds.includes(userId);
+        // Optimistic UI update
         if (isBanned) {
-            await unbanUser(userId);
             setBannedUserIds(prev => prev.filter(id => id !== userId));
+            await unbanUser(userId);
         } else {
-            await banUser(userId);
             setBannedUserIds(prev => [...prev, userId]);
+            await banUser(userId);
         }
+        // Refresh list to be sure
+        const users = await getAllUsers();
+        setAllUsers(users);
     };
 
     const handleConnectWallet = () => tonConnectUI.openModal();
@@ -405,19 +420,6 @@ const App: React.FC = () => {
     );
 
     const renderAdminPanel = () => {
-        // Collect unique users from orders + admin banned users logic could be expanded here
-        // For now using user_id from orders
-        const uniqueUsers = Array.from(new Set(adminOrders.map(o => o.userId)))
-            .filter((id): id is number => typeof id === 'number')
-            .map(id => {
-                return { id };
-            });
-
-        // Add current user if not present (to show at least one user)
-        if (user && !uniqueUsers.find(u => u.id === user.id)) {
-            uniqueUsers.push({ id: user.id });
-        }
-
         return (
             <div className="p-5 pb-24 h-full flex flex-col">
                 <div className="flex justify-between items-center mb-4 animate-slide-up">
@@ -447,9 +449,6 @@ const App: React.FC = () => {
                         adminOrders.length === 0 ? (
                             <div className="text-center mt-10">
                                 <p className="text-gray-500">Нет активных заказов</p>
-                                <p className="text-[10px] text-gray-600 mt-2 max-w-[200px] mx-auto">
-                                    Примечание: Показаны заказы из БД.
-                                </p>
                             </div>
                         ) : (
                             adminOrders.map((order) => (
@@ -459,28 +458,37 @@ const App: React.FC = () => {
                     ) : (
                         // Users Tab
                         <div className="space-y-2">
-                            {uniqueUsers.map(u => {
-                                const isBanned = bannedUserIds.includes(u.id);
-                                return (
-                                    <div key={u.id} className="glass-card p-4 rounded-xl flex justify-between items-center">
-                                        <div>
-                                            <div className="font-bold text-white text-sm">ID: {u.id}</div>
-                                            <div className="text-xs text-gray-500">
-                                                {u.id === user?.id ? '(Вы)' : 'Пользователь'}
+                            {allUsers.length === 0 ? (
+                                <div className="text-center mt-10">
+                                    <p className="text-gray-500">Пользователи не найдены</p>
+                                </div>
+                            ) : (
+                                allUsers.map((u) => {
+                                    const isBanned = bannedUserIds.includes(Number(u.id));
+                                    return (
+                                        <div key={u.id} className="glass-card p-4 rounded-xl flex justify-between items-center">
+                                            <div>
+                                                <div className="flex items-center gap-2">
+                                                    <span className="font-bold text-white text-sm">{u.first_name} {u.last_name}</span>
+                                                    {u.username && <span className="text-xs text-accent-cyan">@{u.username}</span>}
+                                                </div>
+                                                <div className="text-[10px] text-gray-500 font-mono mt-0.5">
+                                                    ID: {u.id} • Lang: {u.language_code || '?'}
+                                                </div>
+                                                <div className="text-[10px] text-gray-600">
+                                                    Login: {new Date(u.last_login).toLocaleString()}
+                                                </div>
                                             </div>
+                                            <button 
+                                                onClick={() => handleBanToggle(Number(u.id))}
+                                                className={`px-3 py-1.5 rounded-lg text-xs font-bold transition-colors ${isBanned ? 'bg-green-500/20 text-green-400' : 'bg-red-500/20 text-red-400'}`}
+                                            >
+                                                {isBanned ? 'Разбанить' : 'Забанить'}
+                                            </button>
                                         </div>
-                                        <button 
-                                            onClick={() => handleBanToggle(u.id)}
-                                            className={`px-3 py-1.5 rounded-lg text-xs font-bold transition-colors ${isBanned ? 'bg-green-500/20 text-green-400' : 'bg-red-500/20 text-red-400'}`}
-                                        >
-                                            {isBanned ? 'Разбанить' : 'Забанить'}
-                                        </button>
-                                    </div>
-                                );
-                            })}
-                             <p className="text-[10px] text-gray-500 text-center mt-4 px-4">
-                                * Список пользователей из заказов.
-                            </p>
+                                    );
+                                })
+                            )}
                         </div>
                     )}
                 </div>
@@ -695,7 +703,9 @@ const App: React.FC = () => {
     );
 
     const renderProfile = () => {
+        // Safe check for stats existence, though now initialized with INITIAL_STATS
         if (!stats) return null;
+        
         return (
             <div className="flex flex-col h-full animate-slide-up">
                  <div className="p-4 flex items-center gap-4 sticky top-0 z-10 bg-[#05010a]/80 backdrop-blur-xl border-b border-white/5">

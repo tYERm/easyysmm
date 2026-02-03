@@ -24,11 +24,15 @@ export default async function handler(req: Request) {
           last_login = NOW()
       `;
 
-      // Check if banned
+      // Check if banned and if new
+      // We increased the threshold to 60 seconds to account for latency
       const user = await sql`SELECT is_banned, created_at, last_login FROM users WHERE id = ${id}`;
       
-      // Determine if new user (created within last 10 seconds)
-      const isNew = user[0] && (new Date().getTime() - new Date(user[0].created_at).getTime() < 10000);
+      const createdAt = new Date(user[0].created_at).getTime();
+      const now = Date.now();
+      
+      // If created within last 60 seconds, consider new
+      const isNew = user[0] && ((now - createdAt) < 60000);
 
       return new Response(JSON.stringify({ 
         isBanned: user[0]?.is_banned || false,
@@ -46,13 +50,29 @@ export default async function handler(req: Request) {
   if (req.method === 'GET') {
       const url = new URL(req.url);
       const userId = url.searchParams.get('id');
-      if (userId) {
-          const user = await sql`SELECT * FROM users WHERE id = ${userId}`;
-          return new Response(JSON.stringify(user[0] || {}), { headers: { 'Content-Type': 'application/json' } });
-      }
+      const mode = url.searchParams.get('mode');
+
       // Get all users for admin
-      const allUsers = await sql`SELECT * FROM users ORDER BY created_at DESC LIMIT 100`;
-      return new Response(JSON.stringify(allUsers), { headers: { 'Content-Type': 'application/json' } });
+      if (mode === 'list') {
+          try {
+             const allUsers = await sql`SELECT * FROM users ORDER BY created_at DESC LIMIT 200`;
+             return new Response(JSON.stringify(allUsers), { headers: { 'Content-Type': 'application/json' } });
+          } catch (e: any) {
+             return new Response(JSON.stringify({ error: e.message }), { status: 500 });
+          }
+      }
+
+      // Get specific user
+      if (userId) {
+          try {
+            const user = await sql`SELECT * FROM users WHERE id = ${userId}`;
+            return new Response(JSON.stringify(user[0] || {}), { headers: { 'Content-Type': 'application/json' } });
+          } catch (e: any) {
+             return new Response(JSON.stringify({ error: e.message }), { status: 500 });
+          }
+      }
+
+      return new Response('Missing params', { status: 400 });
   }
 
   return new Response('Method not allowed', { status: 405 });

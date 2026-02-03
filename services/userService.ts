@@ -1,8 +1,8 @@
 import { Order, TelegramUser, UserStats, SmmService, WalletInfo } from "../types";
 import { SERVICES, ADMIN_ID } from "./data";
 
-// Initial Empty Stats
-const INITIAL_STATS: UserStats = {
+// Initial Empty Stats (Exported for App.tsx)
+export const INITIAL_STATS: UserStats = {
   totalSpentTon: 0,
   totalOrders: 0,
   stats: {
@@ -32,14 +32,27 @@ export const syncUserWithDb = async (user: TelegramUser): Promise<{ isBanned: bo
 };
 
 /**
+ * Get All Users (For Admin Panel)
+ */
+export const getAllUsers = async (): Promise<any[]> => {
+    try {
+        // Pass a special flag to get all users
+        const res = await fetch('/api/users?mode=list'); 
+        if (!res.ok) return [];
+        return await res.json();
+    } catch (e) {
+        console.error("Get all users error:", e);
+        return [];
+    }
+};
+
+/**
  * Get Banned Users (For Admin Panel)
  */
 export const getBannedUsers = async (): Promise<number[]> => {
     try {
-        const res = await fetch('/api/users?id=all'); // Simplified: In real app, separate endpoint for list
-        if (!res.ok) return [];
-        const users: any[] = await res.json();
-        return users.filter(u => u.is_banned).map(u => Number(u.id));
+        const users = await getAllUsers();
+        return users.filter((u: any) => u.is_banned).map((u: any) => Number(u.id));
     } catch (e) {
         return [];
     }

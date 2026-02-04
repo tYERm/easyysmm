@@ -2,7 +2,8 @@ import React, { useState, useEffect, useMemo, FC } from 'react';
 import { 
     UsersIcon, EyeIcon, ThumbsUpIcon, ThumbsDownIcon, BotIcon, 
     HomeIcon, HistoryIcon, WalletIcon, ChevronLeftIcon, CopyIcon,
-    CheckIcon, SparklesIcon, ArrowRightIcon, TrashIcon, ShieldIcon
+    CheckIcon, SparklesIcon, ArrowRightIcon, TrashIcon, ShieldIcon,
+    SmartphoneIcon
 } from './components/Icons';
 import { SERVICES, TON_WALLET, calculatePrice, formatTon, formatRub, ADMIN_ID } from './services/data';
 import { verifyPayment } from './services/tonService';
@@ -181,6 +182,7 @@ const App: React.FC = () => {
     const [adminOrders, setAdminOrders] = useState<Order[]>([]);
     const [allUsers, setAllUsers] = useState<any[]>([]);
     const [bannedUserIds, setBannedUserIds] = useState<number[]>([]);
+    const [isCompatibleDevice, setIsCompatibleDevice] = useState(true);
     
     // Fix: Initialize stats with 0 so profile renders immediately
     const [stats, setStats] = useState<UserStats>(INITIAL_STATS);
@@ -208,6 +210,17 @@ const App: React.FC = () => {
             tg.enableClosingConfirmation();
             tg.setHeaderColor('#05010a');
             tg.setBackgroundColor('#05010a');
+
+            // Platform check: Block PC/Browser access
+            const platform = tg.platform || 'unknown';
+            const allowedPlatforms = ['android', 'ios'];
+            // Allow development mode or specific mobile platforms
+            const isDev = process.env.NODE_ENV === 'development';
+            
+            if (!allowedPlatforms.includes(platform) && !isDev) {
+                setIsCompatibleDevice(false);
+                return; // Stop further initialization
+            }
         }
 
         const init = async () => {
@@ -791,6 +804,40 @@ const App: React.FC = () => {
             <div className="mt-8 text-xs text-gray-600">ID: {user?.id}</div>
         </div>
     );
+
+    if (!isCompatibleDevice) {
+        return (
+            <div className="fixed inset-0 z-50 flex flex-col items-center justify-center p-8 text-center bg-[#05010a] text-white animate-pop overflow-hidden">
+                 <div className="absolute inset-0 bg-[radial-gradient(circle_at_center,_var(--tw-gradient-stops))] from-violet-900/20 via-[#05010a] to-[#05010a]"></div>
+                 
+                 {/* Decorative background elements */}
+                 <div className="absolute top-1/4 left-1/4 w-64 h-64 bg-violet-600/10 rounded-full blur-3xl animate-pulse-slow"></div>
+                 <div className="absolute bottom-1/4 right-1/4 w-64 h-64 bg-accent-cyan/5 rounded-full blur-3xl animate-pulse-slow" style={{animationDelay: '1s'}}></div>
+
+                 <div className="relative z-10 flex flex-col items-center max-w-md w-full glass-card p-8 rounded-3xl border-t border-white/10">
+                    <div className="w-20 h-20 bg-gradient-to-br from-violet-600 to-violet-900 rounded-2xl flex items-center justify-center mb-6 shadow-xl shadow-violet-900/50 relative group">
+                        <div className="absolute inset-0 bg-white/20 rounded-2xl opacity-0 group-hover:opacity-100 transition-opacity"></div>
+                        <SmartphoneIcon className="w-10 h-10 text-white" />
+                    </div>
+                    
+                    <h1 className="text-2xl font-bold mb-3 tracking-tight text-white">Мобильное приложение</h1>
+                    <p className="text-gray-400 text-sm leading-relaxed mb-8">
+                        Для доступа к сервису EasySMM, пожалуйста, откройте это приложение через Telegram на вашем смартфоне.
+                    </p>
+                    
+                    <div className="w-full bg-white/5 rounded-xl border border-white/10 p-4 flex items-center gap-4">
+                        <div className="w-10 h-10 rounded-full bg-[#2AABEE]/20 flex items-center justify-center shrink-0">
+                            <svg className="w-5 h-5 text-[#2AABEE]" viewBox="0 0 24 24" fill="currentColor"><path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm4.64 6.8c-.15 1.58-.8 5.42-1.13 7.19-.14.75-.42 1-.68 1.03-.58.05-1.02-.38-1.58-.75-.88-.58-1.48-.94-2.4-1.54-1.06-.7-.37-1.09.23-1.7.15-.15 2.8-2.56 2.85-2.78.01-.03.01-.15-.06-.21-.07-.06-.17-.04-.25-.02-.11.02-1.91 1.2-5.39 3.56-.51.35-.96.52-1.37.51-.45-.01-1.32-.26-1.96-.47-.79-.26-1.41-.39-1.35-.83.03-.23.35-.47.96-.71 3.78-1.65 6.31-2.74 7.58-3.27 3.61-1.51 4.36-1.77 4.85-1.78.11 0 .35.03.51.16.13.11.17.26.19.43 0 .07.01.23 0 .23z"/></svg>
+                        </div>
+                        <div className="text-left">
+                            <div className="text-[10px] text-gray-500 uppercase font-bold">Платформа</div>
+                            <div className="text-sm font-bold text-white">Telegram Mobile</div>
+                        </div>
+                    </div>
+                 </div>
+            </div>
+        );
+    }
 
     return (
         <div className="min-h-screen text-white font-sans selection:bg-violet-500/30 overflow-hidden relative">

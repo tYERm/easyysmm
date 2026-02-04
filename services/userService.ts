@@ -13,6 +13,18 @@ export const INITIAL_STATS: UserStats = {
   }
 };
 
+// Helper to get Telegram Init Data for Auth
+const getAuthHeaders = () => {
+    let initData = '';
+    if ((window as any).Telegram?.WebApp?.initData) {
+        initData = (window as any).Telegram.WebApp.initData;
+    }
+    return {
+        'Content-Type': 'application/json',
+        'Authorization': `tma ${initData}`
+    };
+};
+
 /**
  * Sync user with DB on startup
  */
@@ -20,7 +32,7 @@ export const syncUserWithDb = async (user: TelegramUser): Promise<{ isBanned: bo
     try {
         const res = await fetch('/api/users', {
             method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
+            headers: getAuthHeaders(),
             body: JSON.stringify(user)
         });
         if (!res.ok) throw new Error('Sync failed');
@@ -36,8 +48,9 @@ export const syncUserWithDb = async (user: TelegramUser): Promise<{ isBanned: bo
  */
 export const getAllUsers = async (): Promise<any[]> => {
     try {
-        // Pass a special flag to get all users
-        const res = await fetch('/api/users?mode=list'); 
+        const res = await fetch('/api/users?mode=list', {
+            headers: getAuthHeaders()
+        }); 
         if (!res.ok) return [];
         return await res.json();
     } catch (e) {
@@ -61,7 +74,7 @@ export const getBannedUsers = async (): Promise<number[]> => {
 export const banUser = async (userId: number) => {
     await fetch('/api/admin', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: getAuthHeaders(),
         body: JSON.stringify({ userId, action: 'ban' })
     });
 };
@@ -69,14 +82,16 @@ export const banUser = async (userId: number) => {
 export const unbanUser = async (userId: number) => {
     await fetch('/api/admin', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: getAuthHeaders(),
         body: JSON.stringify({ userId, action: 'unban' })
     });
 };
 
 export const isUserBanned = async (userId: number): Promise<boolean> => {
     try {
-        const res = await fetch(`/api/users?id=${userId}`);
+        const res = await fetch(`/api/users?id=${userId}`, {
+            headers: getAuthHeaders()
+        });
         const user = await res.json();
         return user.is_banned || false;
     } catch {
@@ -105,9 +120,6 @@ export const getUserData = (): TelegramUser | null => {
   return null;
 };
 
-// Placeholder for legacy calls, handled by syncUserWithDb now
-export const checkIsNewUser = () => false;
-
 /**
  * Get Orders (Fetch from API)
  */
@@ -117,12 +129,13 @@ export const getOrders = async (userId: number | undefined, isAdmin: boolean = f
       if (userId) params.append('userId', userId.toString());
       if (isAdmin) params.append('isAdmin', 'true');
 
-      const res = await fetch(`/api/orders?${params.toString()}`);
+      const res = await fetch(`/api/orders?${params.toString()}`, {
+          headers: getAuthHeaders()
+      });
       if (!res.ok) return [];
       
       const orders = await res.json();
       
-      // Ensure types match frontend expectations (strings to numbers where needed)
       return orders.map((o: any) => ({
           ...o,
           amountTon: Number(o.amountTon),
@@ -144,14 +157,14 @@ export const saveOrder = async (order: Order, userId: number): Promise<Order[]> 
   try {
       await fetch('/api/orders', {
           method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
+          headers: getAuthHeaders(),
+          // userId is technically ignored by backend now (taken from token), but kept for type compat
           body: JSON.stringify({ ...order, userId })
       });
-      // Fetch fresh list
       return await getOrders(userId, false);
   } catch (e) {
       console.error("Save order error:", e);
-      return []; // Should probably handle error in UI
+      return []; 
   }
 };
 
@@ -162,7 +175,7 @@ export const updateOrderStatus = async (orderId: string, newStatus: 'completed' 
     try {
         await fetch('/api/orders', {
             method: 'PATCH',
-            headers: { 'Content-Type': 'application/json' },
+            headers: getAuthHeaders(),
             body: JSON.stringify({ orderId, status: newStatus })
         });
         return await getOrders(undefined, true);
@@ -214,22 +227,19 @@ export const calculateStats = (orders: Order[]): UserStats => {
 // --- WALLET ---
 
 export const saveWalletData = async (wallet: WalletInfo) => {
-  const user = getUserData();
-  if (user) {
-      await fetch('/api/wallet', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-              userId: user.id,
-              address: wallet.address,
-              appName: wallet.appName
-          })
-      });
-  }
+  // We don't need to pass userId anymore, backend takes it from initData
+  await fetch('/api/wallet', {
+      method: 'POST',
+      headers: getAuthHeaders(),
+      body: JSON.stringify({
+          address: wallet.address,
+          appName: wallet.appName
+      })
+  });
 };
 
 export const disconnectWalletData = () => {
-  // No explicit disconnect needed on backend, just local state clear
+  // No explicit disconnect needed on backend
 };
 
 export const fetchWalletBalance = async (address: string): Promise<number> => {

@@ -1,21 +1,35 @@
 import { neon } from '@neondatabase/serverless';
+import { validateTelegramWebAppData, setSecurityHeaders } from './_validate';
 
 export default async function handler(req: any, res: any) {
-  res.setHeader('Access-Control-Allow-Credentials', true);
-  res.setHeader('Access-Control-Allow-Origin', '*');
-  res.setHeader('Access-Control-Allow-Methods', 'GET,OPTIONS,PATCH,DELETE,POST,PUT');
+  setSecurityHeaders(res);
   
   if (req.method === 'OPTIONS') {
     res.status(200).end();
     return;
   }
 
-  if (!process.env.DATABASE_URL) return res.status(500).send('DB config missing');
+  if (!process.env.DATABASE_URL) return res.status(500).json({ error: 'DB config missing' });
+
+  // 1. Validate Authentication
+  const authHeader = req.headers.authorization;
+  const initData = authHeader?.startsWith('tma ') ? authHeader.slice(4) : authHeader;
+  const { isValid, user: validatedUser } = validateTelegramWebAppData(initData);
+
+  if (!isValid || !validatedUser) {
+    return res.status(401).json({ error: 'Unauthorized' });
+  }
+
   const sql = neon(process.env.DATABASE_URL);
 
   if (req.method === 'POST') {
     try {
-        const { userId, address, appName } = req.body || {};
+        const { address, appName } = req.body || {};
+        
+        if (!address) return res.status(400).json({ error: 'Address required' });
+
+        // Use ID from token, ignore userId in body
+        const userId = validatedUser.id; 
         
         await sql`
             INSERT INTO wallets (user_id, address, wallet_app, is_connected, connected_at)

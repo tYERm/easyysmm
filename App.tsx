@@ -19,6 +19,7 @@ import { useTonConnectUI, useTonWallet } from '@tonconnect/ui-react';
 
 // --- Types ---
 type ViewState = 'home' | 'order' | 'payment' | 'history' | 'success' | 'profile' | 'admin' | 'banned';
+type AppStatus = 'loading' | 'ready' | 'browser_error' | 'platform_error';
 
 // --- Utils ---
 const getIcon = (iconName: string, className: string) => {
@@ -171,6 +172,10 @@ const App: React.FC = () => {
     const [tonConnectUI] = useTonConnectUI();
     const tonWallet = useTonWallet();
 
+    // App Loading & Security State
+    // Defaulting to 'loading' prevents any main content from flashing
+    const [appStatus, setAppStatus] = useState<AppStatus>('loading');
+
     // State
     const [view, setView] = useState<ViewState>('home');
     const [selectedService, setSelectedService] = useState<SmmService | null>(null);
@@ -182,9 +187,7 @@ const App: React.FC = () => {
     const [adminOrders, setAdminOrders] = useState<Order[]>([]);
     const [allUsers, setAllUsers] = useState<any[]>([]);
     const [bannedUserIds, setBannedUserIds] = useState<number[]>([]);
-    const [isCompatibleDevice, setIsCompatibleDevice] = useState(true);
     
-    // Fix: Initialize stats with 0 so profile renders immediately
     const [stats, setStats] = useState<UserStats>(INITIAL_STATS);
     
     const [walletInfo, setWalletInfo] = useState<WalletInfo | null>(null);
@@ -200,36 +203,49 @@ const App: React.FC = () => {
 
     const isAdmin = user?.id === ADMIN_ID;
 
-    // Initial load
+    // --- Strict Platform Check Effect ---
     useEffect(() => {
-        // Initialize Telegram WebApp
-        if ((window as any).Telegram?.WebApp) {
-            const tg = (window as any).Telegram.WebApp;
-            tg.ready();
-            tg.expand();
-            tg.enableClosingConfirmation();
-            tg.setHeaderColor('#05010a');
-            tg.setBackgroundColor('#05010a');
-
-            // Platform check: Block PC/Browser access
-            const platform = tg.platform || 'unknown';
-            const allowedPlatforms = ['android', 'ios'];
-            // Allow development mode or specific mobile platforms
-            const isDev = process.env.NODE_ENV === 'development';
-            
-            if (!allowedPlatforms.includes(platform) && !isDev) {
-                setIsCompatibleDevice(false);
-                return; // Stop further initialization
-            }
+        const tg = (window as any).Telegram?.WebApp;
+        
+        // 1. Check if Telegram WebApp SDK is present
+        if (!tg) {
+            setAppStatus('browser_error');
+            return;
         }
 
+        tg.ready();
+        
+        // 2. Security Check: Block direct browser access (missing initData)
+        // In a real Telegram Mini App, initData is always present.
+        if (!tg.initData) {
+             setAppStatus('browser_error');
+             return;
+        }
+
+        // 3. Platform Check: Block PC / Web versions
+        const platform = tg.platform || 'unknown';
+        const allowedPlatforms = ['android', 'ios'];
+        const isDev = process.env.NODE_ENV === 'development';
+
+        if (!allowedPlatforms.includes(platform) && !isDev) {
+            setAppStatus('platform_error');
+            return;
+        }
+
+        // If checks pass:
+        tg.expand();
+        tg.enableClosingConfirmation();
+        tg.setHeaderColor('#05010a');
+        tg.setBackgroundColor('#05010a');
+        
+        setAppStatus('ready');
+
+        // Start Data Loading
         const init = async () => {
-            // Load User Data from Telegram Context
             const currentUser = getUserData();
             setUser(currentUser);
 
             if (currentUser) {
-                // Sync with DB (Async)
                 try {
                     const { isBanned, isNew } = await syncUserWithDb(currentUser);
                     
@@ -242,7 +258,6 @@ const App: React.FC = () => {
                         notifyAdminNewUser(currentUser);
                     }
 
-                    // Fetch Orders (Async)
                     const myOrders = await getOrders(currentUser.id, false);
                     setOrders(myOrders);
                     setStats(calculateStats(myOrders));
@@ -253,10 +268,13 @@ const App: React.FC = () => {
         };
 
         init();
-    }, []);
+
+    }, []); // Empty dependency array ensures this runs once on mount
 
     // Watch for TonConnect wallet changes
     useEffect(() => {
+        if (appStatus !== 'ready') return;
+
         const updateWalletData = async () => {
             if (tonWallet && tonWallet.account) {
                 const rawAddress = tonWallet.account.address;
@@ -275,10 +293,12 @@ const App: React.FC = () => {
             }
         };
         updateWalletData();
-    }, [tonWallet]);
+    }, [tonWallet, appStatus]);
 
     // Admin Data Fetcher
     useEffect(() => {
+        if (appStatus !== 'ready') return;
+
         const fetchAdminData = async () => {
             if (isAdmin && view === 'admin') {
                 if (adminTab === 'orders') {
@@ -287,14 +307,13 @@ const App: React.FC = () => {
                 } else if (adminTab === 'users') {
                     const users = await getAllUsers();
                     setAllUsers(users);
-                    // Also update banned list from full user list
                     const banned = users.filter((u: any) => u.is_banned).map((u: any) => Number(u.id));
                     setBannedUserIds(banned);
                 }
             }
         };
         fetchAdminData();
-    }, [view, isAdmin, adminTab]);
+    }, [view, isAdmin, adminTab, appStatus]);
 
     const handleServiceSelect = (service: SmmService) => {
         setSelectedService(service);
@@ -372,7 +391,6 @@ const App: React.FC = () => {
 
     const handleBanToggle = async (userId: number) => {
         const isBanned = bannedUserIds.includes(userId);
-        // Optimistic UI update
         if (isBanned) {
             setBannedUserIds(prev => prev.filter(id => id !== userId));
             await unbanUser(userId);
@@ -380,7 +398,6 @@ const App: React.FC = () => {
             setBannedUserIds(prev => [...prev, userId]);
             await banUser(userId);
         }
-        // Refresh list to be sure
         const users = await getAllUsers();
         setAllUsers(users);
     };
@@ -393,10 +410,8 @@ const App: React.FC = () => {
         return calculatePrice(quantity, selectedService.price_per_k);
     }, [selectedService, quantity]);
 
-    // Use Universal Link instead of ton:// protocol
     const tonDeepLink = useMemo(() => {
         const nanoTons = Math.floor(priceData.ton * 1000000000);
-        // Universal link format is more reliable in Telegram WebApp
         return `https://app.tonkeeper.com/transfer/${TON_WALLET}?amount=${nanoTons}&text=${memo}`;
     }, [priceData.ton, memo]);
 
@@ -411,7 +426,6 @@ const App: React.FC = () => {
                     <p className="text-xs text-accent-cyan font-medium tracking-wide">SYSTEM ONLINE</p>
                 </div>
             </div>
-            {/* Top Profile button removed */}
         </div>
     );
 
@@ -469,7 +483,6 @@ const App: React.FC = () => {
                             ))
                         )
                     ) : (
-                        // Users Tab
                         <div className="space-y-2">
                             {allUsers.length === 0 ? (
                                 <div className="text-center mt-10">
@@ -487,9 +500,6 @@ const App: React.FC = () => {
                                                 </div>
                                                 <div className="text-[10px] text-gray-500 font-mono mt-0.5">
                                                     ID: {u.id} • Lang: {u.language_code || '?'}
-                                                </div>
-                                                <div className="text-[10px] text-gray-600">
-                                                    Login: {new Date(u.last_login).toLocaleString()}
                                                 </div>
                                             </div>
                                             <button 
@@ -716,7 +726,6 @@ const App: React.FC = () => {
     );
 
     const renderProfile = () => {
-        // Safe check for stats existence, though now initialized with INITIAL_STATS
         if (!stats) return null;
         
         return (
@@ -805,40 +814,68 @@ const App: React.FC = () => {
         </div>
     );
 
-    if (!isCompatibleDevice) {
-        return (
-            <div className="fixed inset-0 z-50 flex flex-col items-center justify-center p-8 text-center bg-[#05010a] text-white animate-pop overflow-hidden">
-                 <div className="absolute inset-0 bg-[radial-gradient(circle_at_center,_var(--tw-gradient-stops))] from-violet-900/20 via-[#05010a] to-[#05010a]"></div>
-                 
-                 {/* Decorative background elements */}
-                 <div className="absolute top-1/4 left-1/4 w-64 h-64 bg-violet-600/10 rounded-full blur-3xl animate-pulse-slow"></div>
-                 <div className="absolute bottom-1/4 right-1/4 w-64 h-64 bg-accent-cyan/5 rounded-full blur-3xl animate-pulse-slow" style={{animationDelay: '1s'}}></div>
+    const renderErrorScreen = (title: string, message: string, icon: any) => (
+        <div className="fixed inset-0 z-50 flex flex-col items-center justify-center p-8 text-center bg-[#05010a] text-white animate-pop overflow-hidden">
+             <div className="absolute inset-0 bg-[radial-gradient(circle_at_center,_var(--tw-gradient-stops))] from-violet-900/20 via-[#05010a] to-[#05010a]"></div>
+             <div className="absolute top-1/4 left-1/4 w-64 h-64 bg-violet-600/10 rounded-full blur-3xl animate-pulse-slow"></div>
+             <div className="absolute bottom-1/4 right-1/4 w-64 h-64 bg-accent-cyan/5 rounded-full blur-3xl animate-pulse-slow" style={{animationDelay: '1s'}}></div>
 
-                 <div className="relative z-10 flex flex-col items-center max-w-md w-full glass-card p-8 rounded-3xl border-t border-white/10">
-                    <div className="w-20 h-20 bg-gradient-to-br from-violet-600 to-violet-900 rounded-2xl flex items-center justify-center mb-6 shadow-xl shadow-violet-900/50 relative group">
-                        <div className="absolute inset-0 bg-white/20 rounded-2xl opacity-0 group-hover:opacity-100 transition-opacity"></div>
-                        <SmartphoneIcon className="w-10 h-10 text-white" />
+             <div className="relative z-10 flex flex-col items-center max-w-md w-full glass-card p-8 rounded-3xl border-t border-white/10">
+                <div className="w-20 h-20 bg-gradient-to-br from-violet-600 to-violet-900 rounded-2xl flex items-center justify-center mb-6 shadow-xl shadow-violet-900/50 relative group">
+                    <div className="absolute inset-0 bg-white/20 rounded-2xl opacity-0 group-hover:opacity-100 transition-opacity"></div>
+                    {icon}
+                </div>
+                
+                <h1 className="text-2xl font-bold mb-3 tracking-tight text-white">{title}</h1>
+                <p className="text-gray-400 text-sm leading-relaxed mb-8">
+                    {message}
+                </p>
+                
+                <div className="w-full bg-white/5 rounded-xl border border-white/10 p-4 flex items-center gap-4">
+                    <div className="w-10 h-10 rounded-full bg-[#2AABEE]/20 flex items-center justify-center shrink-0">
+                        <svg className="w-5 h-5 text-[#2AABEE]" viewBox="0 0 24 24" fill="currentColor"><path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm4.64 6.8c-.15 1.58-.8 5.42-1.13 7.19-.14.75-.42 1-.68 1.03-.58.05-1.02-.38-1.58-.75-.88-.58-1.48-.94-2.4-1.54-1.06-.7-.37-1.09.23-1.7.15-.15 2.8-2.56 2.85-2.78.01-.03.01-.15-.06-.21-.07-.06-.17-.04-.25-.02-.11.02-1.91 1.2-5.39 3.56-.51.35-.96.52-1.37.51-.45-.01-1.32-.26-1.96-.47-.79-.26-1.41-.39-1.35-.83.03-.23.35-.47.96-.71 3.78-1.65 6.31-2.74 7.58-3.27 3.61-1.51 4.36-1.77 4.85-1.78.11 0 .35.03.51.16.13.11.17.26.19.43 0 .07.01.23 0 .23z"/></svg>
                     </div>
-                    
-                    <h1 className="text-2xl font-bold mb-3 tracking-tight text-white">Мобильное приложение</h1>
-                    <p className="text-gray-400 text-sm leading-relaxed mb-8">
-                        Для доступа к сервису EasySMM, пожалуйста, откройте это приложение через Telegram на вашем смартфоне.
-                    </p>
-                    
-                    <div className="w-full bg-white/5 rounded-xl border border-white/10 p-4 flex items-center gap-4">
-                        <div className="w-10 h-10 rounded-full bg-[#2AABEE]/20 flex items-center justify-center shrink-0">
-                            <svg className="w-5 h-5 text-[#2AABEE]" viewBox="0 0 24 24" fill="currentColor"><path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm4.64 6.8c-.15 1.58-.8 5.42-1.13 7.19-.14.75-.42 1-.68 1.03-.58.05-1.02-.38-1.58-.75-.88-.58-1.48-.94-2.4-1.54-1.06-.7-.37-1.09.23-1.7.15-.15 2.8-2.56 2.85-2.78.01-.03.01-.15-.06-.21-.07-.06-.17-.04-.25-.02-.11.02-1.91 1.2-5.39 3.56-.51.35-.96.52-1.37.51-.45-.01-1.32-.26-1.96-.47-.79-.26-1.41-.39-1.35-.83.03-.23.35-.47.96-.71 3.78-1.65 6.31-2.74 7.58-3.27 3.61-1.51 4.36-1.77 4.85-1.78.11 0 .35.03.51.16.13.11.17.26.19.43 0 .07.01.23 0 .23z"/></svg>
-                        </div>
-                        <div className="text-left">
-                            <div className="text-[10px] text-gray-500 uppercase font-bold">Платформа</div>
-                            <div className="text-sm font-bold text-white">Telegram Mobile</div>
-                        </div>
+                    <div className="text-left">
+                        <div className="text-[10px] text-gray-500 uppercase font-bold">Платформа</div>
+                        <div className="text-sm font-bold text-white">Telegram Mobile App</div>
                     </div>
-                 </div>
+                </div>
+             </div>
+        </div>
+    );
+
+    // --- Conditional Rendering for Security ---
+
+    if (appStatus === 'loading') {
+        return (
+            <div className="min-h-screen bg-[#05010a] flex items-center justify-center">
+                {/* Nebula Background (static for loading) */}
+                <div className="fixed inset-0 overflow-hidden pointer-events-none">
+                    <div className="absolute top-0 right-0 w-[300px] h-[300px] bg-violet-900/20 blur-[100px] rounded-full animate-pulse"></div>
+                    <div className="absolute bottom-0 left-0 w-[300px] h-[300px] bg-blue-900/20 blur-[100px] rounded-full animate-pulse" style={{animationDelay: '1s'}}></div>
+                </div>
+                <div className="w-12 h-12 border-4 border-violet-500 border-t-transparent rounded-full animate-spin relative z-10"></div>
             </div>
         );
     }
 
+    if (appStatus === 'browser_error') {
+        return renderErrorScreen(
+            "Доступ запрещен",
+            "Сайт доступен только внутри Telegram Mini Apps. Пожалуйста, откройте бота в Telegram.",
+            <ShieldIcon className="w-10 h-10 text-white" />
+        );
+    }
+
+    if (appStatus === 'platform_error') {
+        return renderErrorScreen(
+            "Мобильное приложение",
+            "EasySMM оптимизирован только для мобильных устройств. Пожалуйста, зайдите с телефона.",
+            <SmartphoneIcon className="w-10 h-10 text-white" />
+        );
+    }
+
+    // Main App Content (Only renders if status === 'ready')
     return (
         <div className="min-h-screen text-white font-sans selection:bg-violet-500/30 overflow-hidden relative">
             {view === 'banned' && renderBanned()}
@@ -853,7 +890,7 @@ const App: React.FC = () => {
 
             {/* Bottom Navigation */}
             {['home', 'history', 'profile', 'admin'].includes(view) && (
-                <div className="fixed bottom-0 left-0 right-0 p-4 z-50">
+                <div className="fixed bottom-0 left-0 right-0 p-4 z-50 animate-slide-up">
                     <div className="glass-panel rounded-2xl p-1 flex justify-between items-center shadow-2xl backdrop-blur-xl border border-white/10 bg-[#05010a]/80">
                         <button 
                             onClick={() => setView('home')}

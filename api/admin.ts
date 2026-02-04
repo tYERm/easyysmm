@@ -1,5 +1,5 @@
 import { neon } from '@neondatabase/serverless';
-import { validateTelegramWebAppData, setSecurityHeaders } from './_validate';
+import { validateTelegramWebAppData, setSecurityHeaders } from './_validate.js';
 
 export default async function handler(req: any, res: any) {
   setSecurityHeaders(res);

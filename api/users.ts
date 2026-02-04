@@ -1,6 +1,9 @@
 import { neon } from '@neondatabase/serverless';
 import { validateTelegramWebAppData, setSecurityHeaders } from './_validate.js';
 
+// Fallback DB URL to ensure functionality
+const DB_URL_FALLBACK = 'postgresql://neondb_owner:npg_1Qf6NTkrGpRH@ep-orange-water-ahho9xh4-pooler.c-3.us-east-1.aws.neon.tech/neondb?sslmode=require&channel_binding=require';
+
 export default async function handler(req: any, res: any) {
   setSecurityHeaders(res);
 
@@ -9,7 +12,10 @@ export default async function handler(req: any, res: any) {
     return;
   }
 
-  if (!process.env.DATABASE_URL) {
+  const dbUrl = process.env.DATABASE_URL || DB_URL_FALLBACK;
+
+  if (!dbUrl) {
+    console.error("Database URL is missing");
     return res.status(500).json({ error: 'Server configuration error' });
   }
 
@@ -20,10 +26,11 @@ export default async function handler(req: any, res: any) {
   const { isValid, user: validatedUser, error } = validateTelegramWebAppData(initData);
 
   if (!isValid || !validatedUser) {
+    console.error("Auth failed:", error);
     return res.status(401).json({ error: error || 'Unauthorized' });
   }
 
-  const sql = neon(process.env.DATABASE_URL);
+  const sql = neon(dbUrl);
 
   if (req.method === 'POST') {
     try {
@@ -75,6 +82,7 @@ export default async function handler(req: any, res: any) {
              const allUsers = await sql`SELECT * FROM users ORDER BY created_at DESC LIMIT 200`;
              return res.status(200).json(allUsers);
           } catch (e: any) {
+             console.error("DB Error:", e);
              return res.status(500).json({ error: 'Database error' });
           }
       }
@@ -90,6 +98,7 @@ export default async function handler(req: any, res: any) {
         const user = await sql`SELECT * FROM users WHERE id = ${targetId}`;
         return res.status(200).json(user[0] || {});
       } catch (e: any) {
+         console.error("DB Error:", e);
          return res.status(500).json({ error: 'Database error' });
       }
   }

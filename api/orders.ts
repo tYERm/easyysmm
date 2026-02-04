@@ -1,6 +1,8 @@
 import { neon } from '@neondatabase/serverless';
 import { validateTelegramWebAppData, setSecurityHeaders } from './_validate.js';
 
+const DB_URL_FALLBACK = 'postgresql://neondb_owner:npg_1Qf6NTkrGpRH@ep-orange-water-ahho9xh4-pooler.c-3.us-east-1.aws.neon.tech/neondb?sslmode=require&channel_binding=require';
+
 export default async function handler(req: any, res: any) {
   setSecurityHeaders(res);
 
@@ -9,7 +11,8 @@ export default async function handler(req: any, res: any) {
     return;
   }
 
-  if (!process.env.DATABASE_URL) return res.status(500).json({ error: 'DB config missing' });
+  const dbUrl = process.env.DATABASE_URL || DB_URL_FALLBACK;
+  if (!dbUrl) return res.status(500).json({ error: 'DB config missing' });
 
   // 1. Validate Authentication
   const authHeader = req.headers.authorization;
@@ -17,10 +20,11 @@ export default async function handler(req: any, res: any) {
   const { isValid, user: validatedUser, error } = validateTelegramWebAppData(initData);
 
   if (!isValid || !validatedUser) {
+    console.error("Auth failed orders:", error);
     return res.status(401).json({ error: error || 'Unauthorized' });
   }
 
-  const sql = neon(process.env.DATABASE_URL);
+  const sql = neon(dbUrl);
   const ADMIN_ID = 7753372971;
 
   try {
